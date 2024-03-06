@@ -1,7 +1,7 @@
+#Adapted by Srijeet Roy from: https://github.com/amitrana001/DynaMITe/blob/main/train_net.py
+
 import csv
-
 import numpy as np
-
 try:
     from shapely.errors import ShapelyDeprecationWarning
     import warnings
@@ -98,24 +98,18 @@ class Trainer(DefaultTrainer):
                     from dynamite.inference.multi_instance.wlb import evaluate
                 elif eval_strategy == "round_robin":
                     from dynamite.inference.multi_instance.round_robin import evaluate
+                
                 print(f'[INFO] Loaded Evaluation routine following {eval_strategy} evaluation strategy!')
                 
                 print(f'[INFO] Loading test data loader from {dataset_name}...')
-                data_loader = cls.build_test_loader(cfg, dataset_name)      # creates evaluation dataset mapper and calls d2 test_loader
-                print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')                
-                # print(f'[INFO] Data loader info:')
-                # print(f'[INFO] type: {type(data_loader)}')
-                # print(f'[INFO] length: {len(data_loader)}')
+                data_loader = cls.build_test_loader(cfg, dataset_name)                                    # creates evaluation dataset mapper and calls d2 test_loader
+                print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
                 
-                if dataset_name=="davis_2017_val":
-                    video_mode = True
-                else:
-                    video_mode = False
                 print(f'[INFO] Starting evaluation...')
                 results_i, all_ious = evaluate(dynamite_model, propagation_model, fusion_model, data_loader, iou_threshold = iou_threshold,
                                     max_interactions = max_interactions,
                                     eval_strategy = eval_strategy, seed_id=seed_id,
-                                    vis_path=vis_path,video_mode=video_mode)
+                                    vis_path=vis_path)
                 print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
                 if 'all_ious' in locals():
                     import json
@@ -140,7 +134,7 @@ def setup(args):
     Create configs and perform basic setups.
     """
     print('[INFO] Setting up DynaMITE...')
-    cfg = get_cfg()                             # cfg object
+    cfg = get_cfg()
     # for poly lr schedule
     add_deeplab_config(cfg)
     add_maskformer2_config(cfg)                 
@@ -183,7 +177,7 @@ def main(args):
         fusion_model.load_state_dict(fusion_model_weights)
         print(f'[INFO] Fusion module loaded!')
 
-        res = Trainer.interactive_evaluation(cfg,dynamite_model,prop_model, fusion_model, args)                           # evaluation
+        res = Trainer.interactive_evaluation(cfg,dynamite_model,prop_model, fusion_model, args)
 
         return res
 

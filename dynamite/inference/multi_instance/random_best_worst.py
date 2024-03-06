@@ -17,7 +17,6 @@ from detectron2.utils.colormap import colormap
 from detectron2.utils.comm import get_world_size        # utils.comm -> primitives for multi-gpu communication
 from detectron2.utils.logger import log_every_n_seconds
 from torch import nn
-# from ..clicker import Clicker
 from ..utils.clicker import Clicker
 from ..utils.predictor import Predictor
 from PIL import Image
@@ -28,39 +27,25 @@ from pathlib import Path
 def evaluate(
     model, propagation_model, fusion_model,
     data_loader, iou_threshold = 0.85, max_interactions = 10, sampling_strategy=1,
-    eval_strategy = "worst", seed_id = 0, vis_path = None, video_mode=False,
+    eval_strategy = "worst", seed_id = 0, vis_path = None
 ):
     """
-    Run model on the data_loader and return a dict, later used to calculate
-    all the metrics for multi-instance inteactive segmentation such as NCI,
-    NFO, NFI, and Avg IoU.
-    The model will be used in eval mode.
+    Run model on the data_loader and return a dict, later used to calculate all the metrics for multi-instance inteactive segmentation such as NCI,
+    NFO, NFI, and Avg IoU. The model will be used in eval mode.
 
     Arguments:
-        model (callable): a callable which takes an object from
-            `data_loader` and returns some outputs.
+        model (callable): a callable which takes an object from `data_loader` and returns some outputs.
             If it's an nn.Module, it will be temporarily set to `eval` mode.
-            If you wish to evaluate a model in `training` mode instead, you can
-            wrap the given model and override its behavior of `.eval()` and `.train()`.
-        data_loader: an iterable object with a length.
-            The elements it generates will be the inputs to the model.
-        iou_threshold: float
-            Desired IoU value for each object mask
-        max_interactions: int
-            Maxinum number of interactions per object
-        sampling_strategy: int
-            Strategy to avaoid regions while sampling next clicks
+            If you wish to evaluate a model in `training` mode instead, you can wrap the given model and override its behavior of `.eval()` and `.train()`.
+        data_loader: an iterable object with a length. The elements it generates will be the inputs to the model.
+        iou_threshold: float - Desired IoU value for each object mask
+        max_interactions: int - Maxinum number of interactions per object
+        sampling_strategy: int - Strategy to avaoid regions while sampling next clicks
             0: new click sampling avoids all the previously sampled click locations
-            1: new click sampling avoids all locations upto radius 5 around all
-               the previously sampled click locations
-        eval_strategy: str
-            Click sampling strategy during refinement
-        seed_id: int
-            Used to generate fixed seed during evaluation
-        vis_path: str
-            Path to save visualization of masks with clicks during evaluation
-        video_mode: bool
-            If set to True, the input images are frames of a video sequence
+            1: new click sampling avoids all locations upto radius 5 around all the previously sampled click locations
+        eval_strategy: str - Click sampling strategy during refinement (random, best, worst)
+        seed_id: int - Used to generate fixed seed during evaluation
+        vis_path: str - Path to save visualization of masks with clicks during evaluation
 
     Returns:
         Dict with following keys:
@@ -68,10 +53,8 @@ def evaluate(
             'total_num_interactions': total number of interactions/clicks sampled 
             'total_compute_time_str': total compute time for evaluating the dataset
             'iou_threshold': iou_threshold
-            'num_interactions_per_image': a dict with keys as image ids and values 
-             as total number of interactions per image
-            'final_iou_per_object': a dict with keys as image ids and values as
-             list of ious of all objects after final interaction
+            'num_interactions_per_image': a dict with keys as image ids and values as total number of interactions per image
+            'final_iou_per_object': a dict with keys as image ids and values as list of ious of all objects after final interaction
     """
     
     num_devices = get_world_size()
@@ -89,30 +72,26 @@ def evaluate(
     
     # VID
     print(f'[INFO] Loading all frames and ground truth masks from disc...')
-    
     all_images = load_images()
     all_gt_masks = load_gt_masks()
     
     all_ious = {}
     
-    with ExitStack() as stack:                                           # managing multiple context managers
+    with ExitStack() as stack:                                           
 
         if isinstance(model, nn.Module):    
-            stack.enter_context(inference_context(model))               # (context manager) set the model temporarily to .eval()
-        # load propagation model
-            
-        stack.enter_context(torch.no_grad())                             # (context manager) disable gradient calculation
+            stack.enter_context(inference_context(model))                           
+        stack.enter_context(torch.no_grad())                             
 
-        total_num_instances = 0                                          # in the dataset                               
-        total_num_interactions = 0                                       # that were sampled
+        total_num_instances = 0                                          # in the whole dataset                               
+        total_num_interactions = 0                                       # for whole dataset
         
-        final_iou_per_object = defaultdict(list)                          # will store IoUs for all objects (in a list), for each image (image-id as key)
+        final_iou_per_object = defaultdict(list)                          # to store IoUs for all objects (in a list), for each image (image-id as key)
         num_interactions_per_image = {}                                    # key: image-id, value: #interactions
 
         random.seed(123456+seed_id)
         start_data_time = time.perf_counter()
         
-        all_frames = None
 
         dataloader_dict = defaultdict(list)
         print(f'[INFO] Iterating through the Data Loader...')
@@ -127,26 +106,28 @@ def evaluate(
             print(f'\n[INFO] Sequence: {seq}')
             
             # Initialize propagation module - per-sequence
-            num_instances = len(np.unique(all_gt_masks[seq][0])) - 1
+            num_instances = len(np.unique(all_gt_masks[seq][0])) - 1    
             all_frames = all_images[seq]
             num_frames = len(all_frames)
             all_frames = all_frames.unsqueeze(0).float()
             processor = InferenceCore(propagation_model, fusion_model, all_frames, num_instances)
             
-            lowest_index = 0
-            interacted_frames = []
+            lowest_frame_index = 0                # frame with lowest IoU after propagation
+            lowest_instance_index = None         # instance with lowest IoU after propagation
+            round_num = 0
+            interacted_frames = []         
             clicker_dict = {}
             predictor_dict = {}
             iou_for_sequence = [0]*num_frames
             num_interactions_for_sequence = [0]*num_frames
             out_masks = None
-            round_num = 0
-            weakest_instance = None
 
-            while lowest_index!=-1:
+
+            while lowest_frame_index!=-1:
                 round_num += 1
-                print(f'[INFO] DynaMITe refining frame {lowest_index} of sequence {seq}')
-                idx, inputs = dataloader_dict[seq][lowest_index]
+                
+                print(f'[INFO] DynaMITe refining frame {lowest_frame_index} of sequence {seq}')
+                idx, inputs = dataloader_dict[seq][lowest_frame_index]
                 
                 total_data_time += time.perf_counter() - start_data_time
                 if idx == num_warmup:
@@ -155,64 +136,62 @@ def evaluate(
                     total_compute_time = 0
                     total_eval_time = 0
                 start_compute_time = time.perf_counter()
-                
-                if lowest_index not in interacted_frames:    
+                                
+                if lowest_frame_index not in interacted_frames:    
                     clicker = Clicker(inputs, sampling_strategy)
-                    #predictor = Predictor(model)
+                    predictor = Predictor(model)
                     repeat = False
-                else:    
-                    clicker = clicker_dict[lowest_index]
-                    #predictor = predictor_dict[lowest_index]
+                else:                                                   # if the frame has been interacted with previously, reuse clicker and predictor
+                    clicker = clicker_dict[lowest_frame_index]
+                    predictor = predictor_dict[lowest_frame_index]
                     repeat = True
-                predictor = Predictor(model)
                 
+
+                # convert predicted masks from previous round into instance-wise masks
                 if out_masks is not None:
-                    mask_H,mask_W = out_masks[lowest_index].shape
+                    mask_H,mask_W = out_masks[lowest_frame_index].shape
                     prev_pred = np.zeros((num_instances,mask_H,mask_W))
                     for i in range(num_instances):
-                        prev_pred[i][np.where(out_masks[lowest_index]==i+1)] = 1
-                    clicker.set_pred_masks(torch.from_numpy(prev_pred))
-                
-                clicker_dict[lowest_index] = clicker
-                predictor_dict[lowest_index] = predictor
+                        prev_pred[i][np.where(out_masks[lowest_frame_index]==i+1)] = 1          # TODO - order of instances
+                    clicker.set_pred_masks(torch.from_numpy(prev_pred))                
+
 
                 if vis_path:
-                    clicker.save_visualization(vis_path, ious=iou_for_sequence[lowest_index], num_interactions=num_interactions_for_sequence[lowest_index], round_num=round_num)                      # num_interactions==0: ground truth masks
+                    clicker.save_visualization(vis_path, ious=iou_for_sequence[lowest_frame_index], num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
                 
-                num_instances = clicker.num_instances                                                       
-                total_num_instances+=num_instances                                                          # counter for whole dataset
-                total_num_interactions+=(num_instances)                                                     # we start with atleast one interaction per instance (center of each instance, on the ground truth mask)
+                num_instances = clicker.num_instances
+                total_num_instances+=num_instances
 
                 num_interactions = num_instances
-                num_interactions_for_sequence[lowest_index] += num_instances                                                           
+                total_num_interactions+=(num_instances)
+                num_interactions_for_sequence[lowest_frame_index] += num_instances
                 
                 num_clicks_per_object = [1]*(num_instances+1)                                               # +1 for background
                 num_clicks_per_object[-1] = 0                                                               # no interaction for bg yet, so reset
 
-                max_iters_for_image = max_interactions * num_instances                                      # budget defined per instance (max_interactions=10 per instance)
-                                                                                                            # first call - from the clicker object, take the input sample, and max_timestamps (?) to make predictions
-                if not repeat:                                                                                            # first call also populates many Predictor attributes (see inference.utils.predictor.py)
-                    pred_masks = predictor.get_prediction(clicker)                                              # at orig (pre-transfn) image res (num_inst xHxW)
-                    clicker.set_pred_masks(pred_masks)                                                          # clicker.pred_masks 
+                max_iters_for_image = max_interactions * num_instances                                      
+                                                                                                            
+                if not repeat:                                                                              # if the frame is new                                   
+                    pred_masks = predictor.get_prediction(clicker)
+                    clicker.set_pred_masks(pred_masks)
                 
-                ious = clicker.compute_iou()                                                                # compute iou (one score per channel==instance)
+                ious = clicker.compute_iou()                                                                # instance-wise IoU                                                      
                 if vis_path:
-                    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_index], round_num=round_num)  
+                    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
 
                 point_sampled = True
 
                 random_indexes = list(range(len(ious)))
 
                 #interative refinement loop
-                while (num_interactions<max_iters_for_image):                                                 # if not over-budget
-                    if all(iou >= iou_threshold for iou in ious):                                             # if mask quality met for all instances
+                while (num_interactions<max_iters_for_image):
+                    if all(iou >= iou_threshold for iou in ious):
                         break
 
-                    index_clicked = [False]*(num_instances+1)                                                  # redundant - probably
                     if eval_strategy == "worst":
-                        indexes = torch.topk(torch.tensor(ious), k = len(ious),largest=False).indices           # returns a list of indices that sorts ious list from lowest to highest
+                        indexes = torch.topk(torch.tensor(ious), k = len(ious),largest=False).indices
                     elif eval_strategy == "best":                    
-                        indexes = torch.topk(torch.tensor(ious), k = len(ious),largest=True).indices            # returns a list of indices that sorts ious list from highest to lowest
+                        indexes = torch.topk(torch.tensor(ious), k = len(ious),largest=True).indices
                     elif eval_strategy == "random":
                         random.shuffle(random_indexes)
                         indexes = random_indexes
@@ -220,73 +199,64 @@ def evaluate(
                         assert eval_strategy in ["worst", "best", "random"]
 
                     point_sampled = False
-                    if weakest_instance is not None:
-                        obj_index = clicker.get_next_click(refine_obj_index=weakest_instance, time_step=num_interactions)   #num_interactions - counter over image
-                        total_num_interactions+=1                                                                           # for dataset
-                        
-                        index_clicked[obj_index] = True
-                        num_clicks_per_object[i]+=1                                                           
-                        point_sampled = True                    
-                    else:
-                        for i in indexes:                        
-                            if ious[i]<iou_threshold:                                                                # sample click on the first instance that has iou below threshold
-                                obj_index = clicker.get_next_click(refine_obj_index=i, time_step=num_interactions)   #num_interactions - counter over image
-                                total_num_interactions+=1                                                             # for dataset
-                                
-                                index_clicked[obj_index] = True
-                                num_clicks_per_object[i]+=1                                                           
-                                point_sampled = True
-                                break
+                    for i in indexes:                        
+                        if ious[i]<iou_threshold:                                                                
+                            obj_index = clicker.get_next_click(refine_obj_index=i, time_step=num_interactions)                                                           
+                            num_clicks_per_object[i]+=1                                                           
+                            point_sampled = True
+                            break
                     if point_sampled:
-                        num_interactions+=1                                                                        
-                        num_interactions_for_sequence[lowest_index] += num_instances
+                        num_interactions+=1
+                        total_num_interactions+=1
+                        num_interactions_for_sequence[lowest_frame_index] += num_instances
 
                         pred_masks = predictor.get_prediction(clicker)
                         clicker.set_pred_masks(pred_masks)
                         ious = clicker.compute_iou()
                         
                         if vis_path:
-                            clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_index], round_num=round_num)
-                        # final_iou_per_object[f"{inputs[0]['image_id']}_{idx}"].append(ious)
+                            clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
 
-                interacted_frames.append(lowest_index)
+                clicker_dict[lowest_frame_index] = clicker
+                predictor_dict[lowest_frame_index] = predictor
+                interacted_frames.append(lowest_frame_index)
 
-                # compute background mask                                                                           # MiVOS temporal propagation expects (num_instances+1, 1, H, W)
+                # compute background mask                                                                           # MiVOS propagation expects (num_instances+1, 1, H, W)
                 bg_mask = np.ones(pred_masks.shape[-2:])                
                 for i in range(num_instances):
                     bg_mask[np.where(pred_masks[i]==1.)]=0   
                 bg_mask = torch.from_numpy(bg_mask).unsqueeze(0)                                                            # H,W -> 1,H,W
                 pred_masks = torch.cat((bg_mask,pred_masks),dim=0)                                                          # [bg, inst1, inst2, ..]
-                pred_masks = pred_masks.unsqueeze(1).float()                                                                 # num_inst+1, H, W -> num_inst+1,1, H, W
+                pred_masks = pred_masks.unsqueeze(1).float()                                                                # num_inst+1, H, W -> num_inst+1,1, H, W
                 
                 # Propagate
                 print(f'[INFO] Temporal propagation on its way...')
-                out_masks = processor.interact(pred_masks,lowest_index)                
-                np.save(os.path.join(vis_path, f'output_masks_round_{round_num}_refined_frame_{lowest_index}_seq_{seq}.npy'), out_masks)
+                out_masks = processor.interact(pred_masks,lowest_frame_index)                
+                np.save(os.path.join(vis_path, f'output_masks_round_{round_num}_refined_frame_{lowest_frame_index}_seq_{seq}.npy'), out_masks)
 
                 # Frame-level IoU for the sequence
-                # iou_for_sequence = compute_iou_for_sequence(out_masks, all_gt_masks[seq])
-                # min_iou = min(iou_for_sequence)
-                # if min_iou < iou_threshold:
-                #     lowest_index = iou_for_sequence.index(min_iou)                    
-                #     print(f'[INFO] Next index to refine: {lowest_index}, IoU: {min_iou}')
-                # else:
-                #     lowest_index = -1
-                #     print(f'[INFO] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {sum(iou_for_sequence)/len(iou_for_sequence)} ')
-                #     all_ious[seq] = iou_for_sequence   
-
-                # Instance-level IoU for the sequence
-                instance_wise_ious = compute_instance_wise_iou_for_sequence(out_masks, all_gt_masks[seq])
-                min_iou = np.min(instance_wise_ious)
+                iou_for_sequence = compute_iou_for_sequence(out_masks, all_gt_masks[seq])
+                min_iou = min(iou_for_sequence)
                 if min_iou < iou_threshold:
-                    min_idx = np.unravel_index(np.argmin(instance_wise_ious), instance_wise_ious.shape)
-                    lowest_index = min_idx[0]
-                    weakest_instance = min_idx[1]
-                    print(f'[INFO] Next index to refine: {lowest_index}, instance:{weakest_instance}, IoU: {min_iou}')
+                    lowest_frame_index = iou_for_sequence.index(min_iou)                    
+                    print(f'[INFO] Next index to refine: {lowest_frame_index}, IoU: {min_iou}')
                 else:
-                    lowest_index = -1
+                    lowest_frame_index = -1
                     print(f'[INFO] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {sum(iou_for_sequence)/len(iou_for_sequence)} ')
-                    all_ious[seq] = instance_wise_ious   
+                    all_ious[seq] = iou_for_sequence   
+
+                # # Instance-level IoU for the sequence
+                # instance_wise_ious = compute_instance_wise_iou_for_sequence(out_masks, all_gt_masks[seq])
+                # min_iou = np.min(instance_wise_ious)
+                # if min_iou < iou_threshold:
+                #     min_idx = np.unravel_index(np.argmin(instance_wise_ious), instance_wise_ious.shape)
+                #     lowest_frame_index = min_idx[0]
+                #     lowest_instance_index = min_idx[1]
+                #     print(f'[INFO] Next index to refine: {lowest_frame_index}, instance:{lowest_instance_index}, IoU: {min_iou}')
+                # else:
+                #     lowest_frame_index = -1
+                #     print(f'[INFO] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {sum(iou_for_sequence)/len(iou_for_sequence)} ')
+                #     all_ious[seq] = instance_wise_ious   
 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()

@@ -6,6 +6,10 @@ vis/
 run
 .vscode/
 datasets/
+local/
+
+# Jobscripts
+dynamite_mivos_eval.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
