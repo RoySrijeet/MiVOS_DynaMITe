@@ -5,8 +5,10 @@ initmodel/
 vis/
 run
 .vscode/
-datasets/
 local/
+
+# symlinks
+datasets
 
 # Jobscripts
 dynamite_mivos_eval.sh
