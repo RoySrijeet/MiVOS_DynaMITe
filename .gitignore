@@ -8,7 +8,7 @@ run
 local/
 
 # symlinks
-datasets
+datasets/
 
 # Jobscripts
 dynamite_mivos_eval.sh
@@ -142,3 +142,5 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+datasets
+datasets
