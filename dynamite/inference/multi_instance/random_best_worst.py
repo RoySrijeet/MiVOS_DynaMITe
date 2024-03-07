@@ -64,11 +64,11 @@ def evaluate(
 
     total = len(data_loader)  # inference data loader must have a fixed length
    
-    num_warmup = min(5, total - 1)
-    start_time = time.perf_counter()
-    total_data_time = 0 
-    total_compute_time = 0
-    total_eval_time = 0
+    # num_warmup = min(5, total - 1)
+    # start_time = time.perf_counter()
+    # total_data_time = 0 
+    # total_compute_time = 0
+    # total_eval_time = 0
     
     # VID
     print(f'[INFO] Loading all frames and ground truth masks from disc...')
@@ -76,6 +76,8 @@ def evaluate(
     all_gt_masks = load_gt_masks()
     
     all_ious = {}
+    all_interactions = {}
+    all_interactions_per_instance = {}
     
     with ExitStack() as stack:                                           
 
@@ -89,8 +91,9 @@ def evaluate(
         final_iou_per_object = defaultdict(list)                          # to store IoUs for all objects (in a list), for each image (image-id as key)
         num_interactions_per_image = {}                                    # key: image-id, value: #interactions
 
+
         random.seed(123456+seed_id)
-        start_data_time = time.perf_counter()
+        #start_data_time = time.perf_counter()
         
 
         dataloader_dict = defaultdict(list)
@@ -99,7 +102,6 @@ def evaluate(
         for idx, inputs in enumerate(data_loader):            
             curr_seq_name = inputs[0]["file_name"].split('/')[-2]
             dataloader_dict[curr_seq_name].append([idx, inputs])
-
 
         print(f'[INFO] Sequence-wise evaluation...')
         for seq in list(dataloader_dict.keys()):
@@ -120,22 +122,22 @@ def evaluate(
             predictor_dict = {}
             iou_for_sequence = [0]*num_frames
             num_interactions_for_sequence = [0]*num_frames
+            num_interactions_per_instance = [[]] * num_frames
             out_masks = None
 
+
+            # start_time = time.perf_counter()
+            # total_data_time = 0
+            # total_compute_time = 0
+            # total_eval_time = 0
+            # start_compute_time = time.perf_counter()
+            #total_data_time += time.perf_counter() - start_data_time
 
             while lowest_frame_index!=-1:
                 round_num += 1
                 
                 print(f'[INFO] DynaMITe refining frame {lowest_frame_index} of sequence {seq}')
                 idx, inputs = dataloader_dict[seq][lowest_frame_index]
-                
-                total_data_time += time.perf_counter() - start_data_time
-                if idx == num_warmup:
-                    start_time = time.perf_counter()
-                    total_data_time = 0
-                    total_compute_time = 0
-                    total_eval_time = 0
-                start_compute_time = time.perf_counter()
                                 
                 if lowest_frame_index not in interacted_frames:    
                     clicker = Clicker(inputs, sampling_strategy)
@@ -148,39 +150,40 @@ def evaluate(
                 
 
                 # convert predicted masks from previous round into instance-wise masks
+                num_instances = clicker.num_instances
                 if out_masks is not None:
                     mask_H,mask_W = out_masks[lowest_frame_index].shape
-                    prev_pred = np.zeros((num_instances,mask_H,mask_W))
+                    pred_masks = np.zeros((num_instances,mask_H,mask_W))
                     for i in range(num_instances):
-                        prev_pred[i][np.where(out_masks[lowest_frame_index]==i+1)] = 1          # TODO - order of instances
-                    clicker.set_pred_masks(torch.from_numpy(prev_pred))                
-
-
-                if vis_path:
-                    clicker.save_visualization(vis_path, ious=iou_for_sequence[lowest_frame_index], num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
-                
-                num_instances = clicker.num_instances
-                total_num_instances+=num_instances
-
-                num_interactions = num_instances
-                total_num_interactions+=(num_instances)
-                num_interactions_for_sequence[lowest_frame_index] += num_instances
-                
-                num_clicks_per_object = [1]*(num_instances+1)                                               # +1 for background
-                num_clicks_per_object[-1] = 0                                                               # no interaction for bg yet, so reset
-
-                max_iters_for_image = max_interactions * num_instances                                      
-                                                                                                            
-                if not repeat:                                                                              # if the frame is new                                   
+                        pred_masks[i][np.where(out_masks[lowest_frame_index]==i+1)] = 1          # TODO - order of instances
+                    pred_masks = torch.from_numpy(pred_masks)
+                    print(f'[INFO] {seq} pred_masks shape from prev round: {pred_masks.shape}')
+                    clicker.set_pred_masks(pred_masks)   
+                else:
                     pred_masks = predictor.get_prediction(clicker)
                     clicker.set_pred_masks(pred_masks)
                 
                 ious = clicker.compute_iou()                                                                # instance-wise IoU                                                      
                 if vis_path:
-                    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
+                    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)             
+
+                
+                
+                print(f'[INFO] Num of instances: {num_instances}')
+                if not repeat:
+                    total_num_instances+=num_instances
+                    num_interactions = num_instances
+                    total_num_interactions+=(num_instances)
+                    num_interactions_for_sequence[lowest_frame_index] += num_instances
+                    num_interactions_per_instance[lowest_frame_index] = [1]*(num_instances+1)      
+                    num_interactions_per_instance[lowest_frame_index][-1] = 0                                                               # no interaction for bg yet, so reset                    
+                
+                if repeat:
+                    num_interactions = num_interactions_for_sequence[lowest_frame_index]
+
+                max_iters_for_image = max_interactions * num_instances                                      
 
                 point_sampled = True
-
                 random_indexes = list(range(len(ious)))
 
                 #interative refinement loop
@@ -202,13 +205,13 @@ def evaluate(
                     for i in indexes:                        
                         if ious[i]<iou_threshold:                                                                
                             obj_index = clicker.get_next_click(refine_obj_index=i, time_step=num_interactions)                                                           
-                            num_clicks_per_object[i]+=1                                                           
+                            num_interactions_per_instance[lowest_frame_index][i]+=1                                                           
                             point_sampled = True
                             break
                     if point_sampled:
                         num_interactions+=1
                         total_num_interactions+=1
-                        num_interactions_for_sequence[lowest_frame_index] += num_instances
+                        num_interactions_for_sequence[lowest_frame_index] += 1
 
                         pred_masks = predictor.get_prediction(clicker)
                         clicker.set_pred_masks(pred_masks)
@@ -231,19 +234,33 @@ def evaluate(
                 
                 # Propagate
                 print(f'[INFO] Temporal propagation on its way...')
+                print(f'[INFO] {seq} pred_masks shape: {pred_masks.shape}')
                 out_masks = processor.interact(pred_masks,lowest_frame_index)                
-                np.save(os.path.join(vis_path, f'output_masks_round_{round_num}_refined_frame_{lowest_frame_index}_seq_{seq}.npy'), out_masks)
+                #np.save(os.path.join(vis_path, f'output_masks_round_{round_num}_refined_frame_{lowest_frame_index}_seq_{seq}.npy'), out_masks)
 
                 # Frame-level IoU for the sequence
                 iou_for_sequence = compute_iou_for_sequence(out_masks, all_gt_masks[seq])
-                min_iou = min(iou_for_sequence)
-                if min_iou < iou_threshold:
-                    lowest_frame_index = iou_for_sequence.index(min_iou)                    
-                    print(f'[INFO] Next index to refine: {lowest_frame_index}, IoU: {min_iou}')
-                else:
-                    lowest_frame_index = -1
-                    print(f'[INFO] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {sum(iou_for_sequence)/len(iou_for_sequence)} ')
-                    all_ious[seq] = iou_for_sequence   
+                iou_copy = copy.deepcopy(iou_for_sequence)
+                while True:
+                    min_iou = min(iou_copy)
+                    if min_iou < iou_threshold:
+                        lowest_frame_index = iou_copy.index(min_iou)
+                        print(f'[INFO] Next index to refine: {lowest_frame_index}, IoU: {min_iou}')
+                        if num_interactions_for_sequence[lowest_frame_index] >= max_iters_for_image:                  
+                            print(f'[INFO] Budget over - skipping frame {lowest_frame_index}.')
+                            iou_copy.pop(lowest_frame_index)
+                            if len(iou_copy)==0:
+                                print(f'[INFO] Ran out of budget for all frames!')
+                                break
+                            else:
+                                continue
+                        else:
+                            break                        
+                    else:
+                        lowest_frame_index = -1
+                        print(f'[INFO] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {sum(iou_for_sequence)/len(iou_for_sequence)} ')
+                        break
+                       
 
                 # # Instance-level IoU for the sequence
                 # instance_wise_ious = compute_instance_wise_iou_for_sequence(out_masks, all_gt_masks[seq])
@@ -261,62 +278,64 @@ def evaluate(
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
            
-            final_iou_per_object[f"{inputs[0]['image_id']}_{idx}"].append(ious)
-            num_interactions_per_image[f"{inputs[0]['image_id']}_{idx}"] = num_interactions
-            
-            total_compute_time += time.perf_counter() - start_compute_time
-
-            iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
-            data_seconds_per_iter = total_data_time / iters_after_start
-            compute_seconds_per_iter = total_compute_time / iters_after_start
-            total_seconds_per_iter = (time.perf_counter() - start_time) / iters_after_start
-            if idx >= num_warmup * 2 or compute_seconds_per_iter > 5:
-                eta = datetime.timedelta(seconds=int(total_seconds_per_iter * (total - idx - 1)))
-                log_every_n_seconds(
-                    logging.INFO,
-                    (
-                        f"Inference done {idx + 1}/{total}. "
-                        f"Dataloading: {data_seconds_per_iter:.4f} s/iter. "
-                        f"Inference: {compute_seconds_per_iter:.4f} s/iter. "
-                        # f"Eval: {eval_seconds_per_iter:.4f} s/iter. "
-                        f"Total: {total_seconds_per_iter:.4f} s/iter. "
-                        f"Total instances: {total_num_instances}. "
-                        f"Average interactions:{(total_num_interactions/total_num_instances):.2f}. "
-                        f"ETA={eta}"
-                    ),
-                    n=5,
-                )
-            start_data_time = time.perf_counter()
+            all_ious[seq] = iou_for_sequence
+            all_interactions[seq] = num_interactions_for_sequence
+            all_interactions_per_instance[seq] = num_interactions_per_instance
             del clicker_dict
             del predictor_dict
             del processor
-            del all_frames
+            del all_frames, iou_for_sequence, num_interactions_for_sequence,num_interactions_per_instance   
+   
+            
+            #total_compute_time += time.perf_counter() - start_compute_time
+            #time_per_round = total_compute_time / round_num
+            # iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
+            # data_seconds_per_iter = total_data_time / iters_after_start
+            # compute_seconds_per_iter = total_compute_time / iters_after_start
+            # total_seconds_per_iter = (time.perf_counter() - start_time) / iters_after_start
+            # if idx >= num_warmup * 2 or compute_seconds_per_iter > 5:
+            #     eta = datetime.timedelta(seconds=int(total_seconds_per_iter * (total - idx - 1)))
+            #     log_every_n_seconds(
+            #         logging.INFO,
+            #         (
+            #             f"Inference done {idx + 1}/{total}. "
+            #             f"Dataloading: {data_seconds_per_iter:.4f} s/iter. "
+            #             f"Inference: {compute_seconds_per_iter:.4f} s/iter. "
+            #             # f"Eval: {eval_seconds_per_iter:.4f} s/iter. "
+            #             f"Total: {total_seconds_per_iter:.4f} s/iter. "
+            #             f"Total instances: {total_num_instances}. "
+            #             f"Average interactions:{(total_num_interactions/total_num_instances):.2f}. "
+            #             f"ETA={eta}"
+            #         ),
+            #         n=5,
+            #     )
+            #start_data_time = time.perf_counter()
+
 
     # Measure the time only for this worker (before the synchronization barrier)
-    total_time = time.perf_counter() - start_time
-    total_time_str = str(datetime.timedelta(seconds=total_time))
+    #total_time = time.perf_counter() - start_time
+    #total_time_str = str(datetime.timedelta(seconds=total_time))
     # NOTE this format is parsed by grep
-    logger.info(
-        "Total inference time: {} ({:.6f} s / iter per device, on {} devices)".format(
-            total_time_str, total_time / (total - num_warmup), num_devices
-        ),
-    )
-    total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
-    logger.info(
-        "Total inference pure compute time: {} ({:.6f} s / iter per device, on {} devices)".format(
-            total_compute_time_str, total_compute_time / (total - num_warmup), num_devices
-        )
-    )
+    #logger.info(
+    #    "Total inference time: {} ({:.6f} s / iter per device, on {} devices)".format(
+    #        total_time_str, total_time / (total - num_warmup), num_devices
+    #    ),
+    #)
+    #total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
+    #logger.info(
+    #    "Total inference pure compute time: {} ({:.6f} s / iter per device, on {} devices)".format(
+    #        total_compute_time_str, total_compute_time / (total - num_warmup), num_devices
+    #    )
+    #)
 
-    results = {'total_num_instances': [total_num_instances],
+    results = {'all_ious': all_ious,
+                'all_interactions': all_interactions,
+                'interactions_per_instance': all_interactions_per_instance,
                 'total_num_interactions': [total_num_interactions],
-                'total_compute_time_str': total_compute_time_str,
                 'iou_threshold': iou_threshold,
-                'final_iou_per_object': [final_iou_per_object],
-                'num_interactions_per_image': [num_interactions_per_image],
     }
 
-    return results,all_ious
+    return results
 
 
 @contextmanager

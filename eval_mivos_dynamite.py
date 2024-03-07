@@ -16,6 +16,8 @@ import logging
 from typing import Any, Dict, List, Set
 
 import torch
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
@@ -45,6 +47,7 @@ from dynamite.inference.utils.eval_utils import log_single_instance, log_multi_i
 # MiVOS
 from model.propagation.prop_net import PropagationNetwork
 from model.fusion_net import FusionNet
+import os
 
 
 class Trainer(DefaultTrainer):
@@ -70,14 +73,13 @@ class Trainer(DefaultTrainer):
         logger = logging.getLogger(__name__)
 
         if args and args.eval_only:
-            eval_datasets = args.eval_datasets      # dataset to run evaluation on
+            eval_datasets = args.eval_datasets      
             vis_path = args.vis_path                
-            eval_strategy = args.eval_strategy      # "random", "best", "worst", "max_dt", "wlb", "round_robin"
+            eval_strategy = args.eval_strategy      
             seed_id = args.seed_id
             iou_threshold = args.iou_threshold
             max_interactions = args.max_interactions
         
-        # assert iou_threshold in [0.80, 0.85, 0.90, 0.95, 1.00]
         assert iou_threshold>=0.80
 
         print(f'[INFO] Evaluation datasets: {eval_datasets}')
@@ -102,19 +104,18 @@ class Trainer(DefaultTrainer):
                 print(f'[INFO] Loaded Evaluation routine following {eval_strategy} evaluation strategy!')
                 
                 print(f'[INFO] Loading test data loader from {dataset_name}...')
-                data_loader = cls.build_test_loader(cfg, dataset_name)                                    # creates evaluation dataset mapper and calls d2 test_loader
+                data_loader = cls.build_test_loader(cfg, dataset_name)
                 print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
                 
                 print(f'[INFO] Starting evaluation...')
-                results_i, all_ious = evaluate(dynamite_model, propagation_model, fusion_model, data_loader, iou_threshold = iou_threshold,
+                results_i = evaluate(dynamite_model, propagation_model, fusion_model, data_loader, iou_threshold = iou_threshold,
                                     max_interactions = max_interactions,
                                     eval_strategy = eval_strategy, seed_id=seed_id,
                                     vis_path=vis_path)
                 print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
-                if 'all_ious' in locals():
-                    import json
-                    with open('/globalwork/roy/dynamite_video/mivos/MiVOS/output/dynamite_mivos_first_frame/all_ious.json', 'w') as f:
-                        json.dump(all_ious, f)
+                import json
+                with open(os.path.join(vis_path,'results.json'), 'w') as f:
+                    json.dump(results_i, f)
                 
                 # results_i = comm.gather(results_i, dst=0)  # [res1:dict, res2:dict,...]
                 # if comm.is_main_process():
