@@ -9,7 +9,7 @@ import copy
 
 class Clicker:
 
-    def __init__(self, inputs, sampling_strategy =1, click_radius = 5):
+    def __init__(self, inputs, sampling_strategy =1, click_radius = 5, true_num_instances=None):
         """
         Arguments:
             inputs: list, a DataLoader batch 

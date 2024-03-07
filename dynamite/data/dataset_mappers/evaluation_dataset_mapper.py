@@ -93,7 +93,7 @@ class EvaluationDatasetMapper:
         # reads the file as a PIL.Image, then converts it to a np.ndarray
         # supported types: modes supported in PIL, or "BGR" or "YUV-BT.601"
         image = utils.read_image(dataset_dict["file_name"], format=self.img_format)
-        dataset_dict["image_orig"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2,0,1)))     
+        dataset_dict["image_orig"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2,0,1)))    
 
         # check image resolution (height and width) with specifications mentioned in dataset_dict,
         # if dataset_dict is missing 'height' and 'width' entries, populate them with image res

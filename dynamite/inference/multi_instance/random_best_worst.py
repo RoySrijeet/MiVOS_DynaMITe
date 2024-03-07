@@ -48,29 +48,14 @@ def evaluate(
         vis_path: str - Path to save visualization of masks with clicks during evaluation
 
     Returns:
-        Dict with following keys:
-            'total_num_instances': total number of instances in the dataset
-            'total_num_interactions': total number of interactions/clicks sampled 
-            'total_compute_time_str': total compute time for evaluating the dataset
-            'iou_threshold': iou_threshold
-            'num_interactions_per_image': a dict with keys as image ids and values as total number of interactions per image
-            'final_iou_per_object': a dict with keys as image ids and values as list of ious of all objects after final interaction
+        Dict
     """
     
     num_devices = get_world_size()
     logger = logging.getLogger(__name__)
     logger.info("Start inference on {} batches".format(len(data_loader)))                       # 1999 (davis_2017_val)
     logger.info(f"Using {eval_strategy} evaluation strategy with random seed {seed_id}")
-
-    total = len(data_loader)  # inference data loader must have a fixed length
-   
-    # num_warmup = min(5, total - 1)
-    # start_time = time.perf_counter()
-    # total_data_time = 0 
-    # total_compute_time = 0
-    # total_eval_time = 0
     
-    # VID
     print(f'[INFO] Loading all frames and ground truth masks from disc...')
     all_images = load_images()
     all_gt_masks = load_gt_masks()
@@ -86,21 +71,17 @@ def evaluate(
         stack.enter_context(torch.no_grad())                             
 
         total_num_instances = 0                                          # in the whole dataset                               
-        total_num_interactions = 0                                       # for whole dataset
-        
-        final_iou_per_object = defaultdict(list)                          # to store IoUs for all objects (in a list), for each image (image-id as key)
-        num_interactions_per_image = {}                                    # key: image-id, value: #interactions
-
+        total_num_interactions = 0                                       # for whole dataset        
 
         random.seed(123456+seed_id)
-        #start_data_time = time.perf_counter()
         
-
         dataloader_dict = defaultdict(list)
         print(f'[INFO] Iterating through the Data Loader...')
         # iterate through the data_loader, one image at a time
         for idx, inputs in enumerate(data_loader):            
             curr_seq_name = inputs[0]["file_name"].split('/')[-2]
+            if curr_seq_name!='india':
+                continue
             dataloader_dict[curr_seq_name].append([idx, inputs])
 
         print(f'[INFO] Sequence-wise evaluation...')
@@ -108,13 +89,14 @@ def evaluate(
             print(f'\n[INFO] Sequence: {seq}')
             
             # Initialize propagation module - per-sequence
-            num_instances = len(np.unique(all_gt_masks[seq][0])) - 1    
+            seq_object_ids = set(np.unique(all_gt_masks[seq][0]))
+            seq_num_instances = len(seq_object_ids) - 1
             all_frames = all_images[seq]
             num_frames = len(all_frames)
             all_frames = all_frames.unsqueeze(0).float()
-            processor = InferenceCore(propagation_model, fusion_model, all_frames, num_instances)
+            processor = InferenceCore(propagation_model, fusion_model, all_frames, seq_num_instances)
             
-            lowest_frame_index = 0                # frame with lowest IoU after propagation
+            lowest_frame_index = 0               # frame with lowest IoU after propagation
             lowest_instance_index = None         # instance with lowest IoU after propagation
             round_num = 0
             interacted_frames = []         
@@ -125,25 +107,20 @@ def evaluate(
             num_interactions_per_instance = [[]] * num_frames
             out_masks = None
 
-
-            # start_time = time.perf_counter()
-            # total_data_time = 0
-            # total_compute_time = 0
-            # total_eval_time = 0
-            # start_compute_time = time.perf_counter()
-            #total_data_time += time.perf_counter() - start_data_time
-
             while lowest_frame_index!=-1:
                 round_num += 1
                 
                 print(f'[INFO] DynaMITe refining frame {lowest_frame_index} of sequence {seq}')
                 idx, inputs = dataloader_dict[seq][lowest_frame_index]
+                
+                # objects present in this frame
+                object_ids = set(np.unique(all_gt_masks[seq][lowest_frame_index]))
                                 
                 if lowest_frame_index not in interacted_frames:    
                     clicker = Clicker(inputs, sampling_strategy)
                     predictor = Predictor(model)
                     repeat = False
-                else:                                                   # if the frame has been interacted with previously, reuse clicker and predictor
+                else:                                                  
                     clicker = clicker_dict[lowest_frame_index]
                     predictor = predictor_dict[lowest_frame_index]
                     repeat = True
@@ -151,13 +128,20 @@ def evaluate(
 
                 # convert predicted masks from previous round into instance-wise masks
                 num_instances = clicker.num_instances
+                missing_obj_ids = None
+                if num_instances!=seq_num_instances:
+                    #check for missing object
+                    missing_obj_ids = seq_object_ids - object_ids
+
                 if out_masks is not None:
                     mask_H,mask_W = out_masks[lowest_frame_index].shape
-                    pred_masks = np.zeros((num_instances,mask_H,mask_W))
-                    for i in range(num_instances):
+                    pred_masks = np.zeros((seq_num_instances,mask_H,mask_W))                    
+                    for i in range(seq_num_instances):
+                        if missing_obj_ids is not None:
+                            if i+1 in missing_obj_ids:
+                                continue
                         pred_masks[i][np.where(out_masks[lowest_frame_index]==i+1)] = 1          # TODO - order of instances
                     pred_masks = torch.from_numpy(pred_masks)
-                    print(f'[INFO] {seq} pred_masks shape from prev round: {pred_masks.shape}')
                     clicker.set_pred_masks(pred_masks)   
                 else:
                     pred_masks = predictor.get_prediction(clicker)
@@ -167,9 +151,6 @@ def evaluate(
                 if vis_path:
                     clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)             
 
-                
-                
-                print(f'[INFO] Num of instances: {num_instances}')
                 if not repeat:
                     total_num_instances+=num_instances
                     num_interactions = num_instances
@@ -223,18 +204,26 @@ def evaluate(
                 clicker_dict[lowest_frame_index] = clicker
                 predictor_dict[lowest_frame_index] = predictor
                 interacted_frames.append(lowest_frame_index)
+                if pred_masks.shape[0] != seq_num_instances:
+                    dummy = np.zeros((seq_num_instances, pred_masks.shape[1], pred_masks.shape[2]))
+                    j = 0
+                    for i in range(seq_num_instances):                        
+                        if i+1 in missing_obj_ids:
+                            continue
+                        dummy[i][np.where(pred_masks[j]==1)] = 1
+                        j +=1
+                    pred_masks = torch.from_numpy(dummy)
 
                 # compute background mask                                                                           # MiVOS propagation expects (num_instances+1, 1, H, W)
                 bg_mask = np.ones(pred_masks.shape[-2:])                
-                for i in range(num_instances):
+                for i in range(seq_num_instances):
                     bg_mask[np.where(pred_masks[i]==1.)]=0   
                 bg_mask = torch.from_numpy(bg_mask).unsqueeze(0)                                                            # H,W -> 1,H,W
                 pred_masks = torch.cat((bg_mask,pred_masks),dim=0)                                                          # [bg, inst1, inst2, ..]
                 pred_masks = pred_masks.unsqueeze(1).float()                                                                # num_inst+1, H, W -> num_inst+1,1, H, W
                 
                 # Propagate
-                print(f'[INFO] Temporal propagation on its way...')
-                print(f'[INFO] {seq} pred_masks shape: {pred_masks.shape}')
+                #print(f'[INFO] Temporal propagation on its way...')
                 out_masks = processor.interact(pred_masks,lowest_frame_index)                
                 #np.save(os.path.join(vis_path, f'output_masks_round_{round_num}_refined_frame_{lowest_frame_index}_seq_{seq}.npy'), out_masks)
 
@@ -286,48 +275,6 @@ def evaluate(
             del processor
             del all_frames, iou_for_sequence, num_interactions_for_sequence,num_interactions_per_instance   
    
-            
-            #total_compute_time += time.perf_counter() - start_compute_time
-            #time_per_round = total_compute_time / round_num
-            # iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
-            # data_seconds_per_iter = total_data_time / iters_after_start
-            # compute_seconds_per_iter = total_compute_time / iters_after_start
-            # total_seconds_per_iter = (time.perf_counter() - start_time) / iters_after_start
-            # if idx >= num_warmup * 2 or compute_seconds_per_iter > 5:
-            #     eta = datetime.timedelta(seconds=int(total_seconds_per_iter * (total - idx - 1)))
-            #     log_every_n_seconds(
-            #         logging.INFO,
-            #         (
-            #             f"Inference done {idx + 1}/{total}. "
-            #             f"Dataloading: {data_seconds_per_iter:.4f} s/iter. "
-            #             f"Inference: {compute_seconds_per_iter:.4f} s/iter. "
-            #             # f"Eval: {eval_seconds_per_iter:.4f} s/iter. "
-            #             f"Total: {total_seconds_per_iter:.4f} s/iter. "
-            #             f"Total instances: {total_num_instances}. "
-            #             f"Average interactions:{(total_num_interactions/total_num_instances):.2f}. "
-            #             f"ETA={eta}"
-            #         ),
-            #         n=5,
-            #     )
-            #start_data_time = time.perf_counter()
-
-
-    # Measure the time only for this worker (before the synchronization barrier)
-    #total_time = time.perf_counter() - start_time
-    #total_time_str = str(datetime.timedelta(seconds=total_time))
-    # NOTE this format is parsed by grep
-    #logger.info(
-    #    "Total inference time: {} ({:.6f} s / iter per device, on {} devices)".format(
-    #        total_time_str, total_time / (total - num_warmup), num_devices
-    #    ),
-    #)
-    #total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
-    #logger.info(
-    #    "Total inference pure compute time: {} ({:.6f} s / iter per device, on {} devices)".format(
-    #        total_compute_time_str, total_compute_time / (total - num_warmup), num_devices
-    #    )
-    #)
-
     results = {'all_ious': all_ious,
                 'all_interactions': all_interactions,
                 'interactions_per_instance': all_interactions_per_instance,

@@ -291,3 +291,4 @@ class InferenceCore:
         self.np_masks[idx] = mask
 
         return self.np_masks
+    
