@@ -48,7 +48,7 @@ from dynamite.inference.utils.eval_utils import log_single_instance, log_multi_i
 from model.propagation.prop_net import PropagationNetwork
 from model.fusion_net import FusionNet
 import os
-
+from collections import defaultdict
 
 class Trainer(DefaultTrainer):
     """
@@ -79,6 +79,7 @@ class Trainer(DefaultTrainer):
             seed_id = args.seed_id
             iou_threshold = args.iou_threshold
             max_interactions = args.max_interactions
+            max_frame_interactions = args.max_frame_interactions
         
         assert iou_threshold>=0.80
 
@@ -111,11 +112,15 @@ class Trainer(DefaultTrainer):
                 results_i = evaluate(dynamite_model, propagation_model, fusion_model, data_loader, iou_threshold = iou_threshold,
                                     max_interactions = max_interactions,
                                     eval_strategy = eval_strategy, seed_id=seed_id,
-                                    vis_path=vis_path)
+                                    vis_path=vis_path, max_frame_interactions=max_frame_interactions)
                 print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
                 import json
                 with open(os.path.join(vis_path,'results.json'), 'w') as f:
                     json.dump(results_i, f)
+                
+                summary = summarize_results(results_i)
+                with open(os.path.join(vis_path,'summary.json'), 'w') as f:
+                    json.dump(summary, f)
                 
                 # results_i = comm.gather(results_i, dst=0)  # [res1:dict, res2:dict,...]
                 # if comm.is_main_process():
@@ -128,6 +133,63 @@ class Trainer(DefaultTrainer):
                 #             res_gathered[k] += _d[k]
                 #     log_multi_instance(res_gathered, max_interactions=max_interactions,
                 #                     dataset_name=dataset_name, iou_threshold=iou_threshold)
+
+def summarize_results(results):
+    all_ious = results['all_ious']
+    all_interactions = results['all_interactions']
+    interactions_per_instance = results['interactions_per_instance']
+
+    seqs = list(all_ious.keys())
+    summary = defaultdict()
+    summary['meta'] = {}
+    summary['meta']['total_interactions_over_dataset'] = results['total_num_interactions'][0]
+    summary['meta']['iou_threshold'] = results['iou_threshold']
+    summary['meta']['max_interactions_per_frame'] = results['max_interactions']
+    summary['meta']['max_frames_interaction'] = results['max_frame_interactions']
+    avg_iou_over_dataset = []
+    total_frames_over_dataset = []
+    total_frames_interacted = []
+    total_instances_over_dataset = []
+    total_instances_interacted = []
+    total_failed_sequences = 0
+    total_failed_frames = []
+    for seq in seqs:
+        summary[seq] = {}
+        ious = all_ious[seq]
+        summary[seq]['max_iou'] = max(ious)
+        summary[seq]['min_iou'] = min(ious)
+        summary[seq]['avg_iou'] = sum(ious)/len(ious)
+        avg_iou_over_dataset.append(summary[seq]['avg_iou'])
+        total_failed_frames.append(sum(1 for i in ious if i < results['iou_threshold']))
+        if summary[seq]['avg_iou'] < results['iou_threshold']:
+            total_failed_sequences +=1
+
+        interactions = all_interactions[seq]    
+
+        summary[seq]['total_frames'] = len(interactions)
+        total_frames_over_dataset.append(summary[seq]['total_frames'])
+        summary[seq]['frames_interacted'] = np.count_nonzero(np.array(interactions))
+        total_frames_interacted.append(summary[seq]['frames_interacted'])
+        summary[seq]['total_interactions'] = sum(interactions)
+
+        object_clicks = defaultdict(lambda:0)
+        for clicks in interactions_per_instance[seq]:
+            if len(clicks) !=0:
+                for c in range(len(clicks)):
+                    object_clicks[c] += clicks[c]
+        summary[seq]['instance_wise_interactions'] = list(object_clicks.items())
+        total_instances_over_dataset.append(len(list(object_clicks.keys())))
+        total_instances_interacted.append(np.count_nonzero(np.array(list(object_clicks.values()))))
+
+    summary['meta']['avg_iou_over_dataset'] = sum(avg_iou_over_dataset)/len(avg_iou_over_dataset)
+    summary['meta']['total_failed_sequences'] = total_failed_sequences
+    summary['meta']['total_frames_over_dataset'] = sum(total_frames_over_dataset)
+    summary['meta']['total_frames_interacted'] = sum(total_frames_interacted)
+    summary['meta']['total_failed_frames'] = sum(total_failed_frames)
+    summary['meta']['total_instances_over_dataset'] = sum(total_instances_over_dataset)
+    summary['meta']['total_instances_interacted'] = sum(total_instances_interacted)
+    return summary
+
 
 
 def setup(args):

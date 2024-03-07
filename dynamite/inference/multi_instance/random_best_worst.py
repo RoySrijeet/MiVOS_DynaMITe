@@ -23,11 +23,12 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from inference_core import InferenceCore
 from pathlib import Path
+import math
 
 def evaluate(
     model, propagation_model, fusion_model,
     data_loader, iou_threshold = 0.85, max_interactions = 10, sampling_strategy=1,
-    eval_strategy = "worst", seed_id = 0, vis_path = None
+    eval_strategy = "worst", seed_id = 0, vis_path = None, max_frame_interactions=0
 ):
     """
     Run model on the data_loader and return a dict, later used to calculate all the metrics for multi-instance inteactive segmentation such as NCI,
@@ -80,8 +81,6 @@ def evaluate(
         # iterate through the data_loader, one image at a time
         for idx, inputs in enumerate(data_loader):            
             curr_seq_name = inputs[0]["file_name"].split('/')[-2]
-            if curr_seq_name!='india':
-                continue
             dataloader_dict[curr_seq_name].append([idx, inputs])
 
         print(f'[INFO] Sequence-wise evaluation...')
@@ -107,6 +106,14 @@ def evaluate(
             num_interactions_per_instance = [[]] * num_frames
             out_masks = None
 
+            if max_frame_interactions==0:
+                frame_limit_bool = False
+            else:
+                frame_limit_bool = True
+                frame_interaction_limit = max_frame_interactions
+                #frame_interaction_limit = 8     # MiVOS
+
+            frame_count = 0
             while lowest_frame_index!=-1:
                 round_num += 1
                 
@@ -117,6 +124,7 @@ def evaluate(
                 object_ids = set(np.unique(all_gt_masks[seq][lowest_frame_index]))
                                 
                 if lowest_frame_index not in interacted_frames:    
+                    frame_count += 1
                     clicker = Clicker(inputs, sampling_strategy)
                     predictor = Predictor(model)
                     repeat = False
@@ -148,8 +156,8 @@ def evaluate(
                     clicker.set_pred_masks(pred_masks)
                 
                 ious = clicker.compute_iou()                                                                # instance-wise IoU                                                      
-                if vis_path:
-                    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)             
+                #if vis_path:
+                #    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)             
 
                 if not repeat:
                     total_num_instances+=num_instances
@@ -198,8 +206,8 @@ def evaluate(
                         clicker.set_pred_masks(pred_masks)
                         ious = clicker.compute_iou()
                         
-                        if vis_path:
-                            clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
+                        #if vis_path:
+                        #    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
 
                 clicker_dict[lowest_frame_index] = clicker
                 predictor_dict[lowest_frame_index] = predictor
@@ -233,16 +241,21 @@ def evaluate(
                 while True:
                     min_iou = min(iou_copy)
                     if min_iou < iou_threshold:
+                        if frame_limit_bool and frame_count == frame_interaction_limit:
+                            print(f'[INFO] Maximum frame interaction limit ({frame_interaction_limit}) reached!')
+                            print(f'[INFO] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {sum(iou_for_sequence)/len(iou_for_sequence)} ')
+                            lowest_frame_index = -1
+                            break
                         lowest_frame_index = iou_copy.index(min_iou)
                         print(f'[INFO] Next index to refine: {lowest_frame_index}, IoU: {min_iou}')
                         if num_interactions_for_sequence[lowest_frame_index] >= max_iters_for_image:                  
                             print(f'[INFO] Budget over - skipping frame {lowest_frame_index}.')
                             iou_copy.pop(lowest_frame_index)
                             if len(iou_copy)==0:
-                                print(f'[INFO] Ran out of budget for all frames!')
+                                lowest_frame_index = -1
+                                print(f'[INFO] Ran out of click budget for all frames!')
+                                print(f'[INFO] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {sum(iou_for_sequence)/len(iou_for_sequence)} ')
                                 break
-                            else:
-                                continue
                         else:
                             break                        
                     else:
@@ -280,6 +293,8 @@ def evaluate(
                 'interactions_per_instance': all_interactions_per_instance,
                 'total_num_interactions': [total_num_interactions],
                 'iou_threshold': iou_threshold,
+                'max_frame_interactions': frame_interaction_limit,
+                'max_interactions': max_interactions
     }
 
     return results
