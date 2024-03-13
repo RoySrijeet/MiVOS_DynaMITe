@@ -49,6 +49,7 @@ from model.propagation.prop_net import PropagationNetwork
 from model.fusion_net import FusionNet
 import os
 from collections import defaultdict
+import pandas as pd
 
 class Trainer(DefaultTrainer):
     """
@@ -79,22 +80,20 @@ class Trainer(DefaultTrainer):
             seed_id = args.seed_id
             iou_threshold = args.iou_threshold
             max_interactions = args.max_interactions
-            max_frame_interactions = args.max_frame_interactions
+            max_rounds = args.max_rounds
+            first_frame_only = args.first_frame_only
         
         assert iou_threshold>=0.80
-
-        print(f'[INFO] Evaluation datasets: {eval_datasets}')
-        print(f'[INFO] Evaluation strategy: {eval_strategy}')
-        print(f'[INFO] IoU Threshold: {iou_threshold}')
-        print(f'[INFO] Max interaction limit: {max_interactions}')
-
         for dataset_name in eval_datasets:
 
-            if dataset_name in ["davis_2017_val","sbd_multi_insts","coco_2017_val"]:
+            if dataset_name in ["davis_2017_val","mose","sbd_multi_insts","coco_2017_val"]:
                 print(f'[INFO] Initiating Multi-Instance Evaluation on {eval_datasets}...')
                 
                 if eval_strategy in ["random", "best", "worst"]:
-                    from dynamite.inference.multi_instance.random_best_worst import evaluate
+                    if first_frame_only:
+                        from dynamite.inference.multi_instance.random_best_worst_ff import evaluate
+                    else:
+                        from dynamite.inference.multi_instance.random_best_worst import evaluate
                 elif eval_strategy == "max_dt":
                     from dynamite.inference.multi_instance.max_dt import evaluate
                 elif eval_strategy == "wlb":
@@ -109,18 +108,23 @@ class Trainer(DefaultTrainer):
                 print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
                 
                 print(f'[INFO] Starting evaluation...')
+                vis_path_vis = os.path.join(vis_path, 'vis')
+                os.makedirs(vis_path_vis, exist_ok=True)
                 results_i = evaluate(dynamite_model, propagation_model, fusion_model, data_loader, iou_threshold = iou_threshold,
                                     max_interactions = max_interactions,
                                     eval_strategy = eval_strategy, seed_id=seed_id,
-                                    vis_path=vis_path, max_frame_interactions=max_frame_interactions)
+                                    vis_path=vis_path_vis, max_rounds=max_rounds)
+                
                 print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
+
                 import json
                 with open(os.path.join(vis_path,'results.json'), 'w') as f:
                     json.dump(results_i, f)
                 
-                summary = summarize_results(results_i)
+                summary,df = summarize_results(results_i)
                 with open(os.path.join(vis_path,'summary.json'), 'w') as f:
                     json.dump(summary, f)
+                df.to_csv(os.path.join(vis_path, 'round_results.csv'))
                 
                 # results_i = comm.gather(results_i, dst=0)  # [res1:dict, res2:dict,...]
                 # if comm.is_main_process():
@@ -135,33 +139,62 @@ class Trainer(DefaultTrainer):
                 #                     dataset_name=dataset_name, iou_threshold=iou_threshold)
 
 def summarize_results(results):
-    all_ious = results['all_ious']
-    all_interactions = results['all_interactions']
-    interactions_per_instance = results['interactions_per_instance']
-
-    seqs = list(all_ious.keys())
     summary = defaultdict()
     summary['meta'] = {}
-    summary['meta']['total_interactions_over_dataset'] = results['total_num_interactions'][0]
     summary['meta']['iou_threshold'] = results['iou_threshold']
+    summary['meta']['iou_checkpoints'] = results['iou_checkpoints']
     summary['meta']['max_interactions_per_frame'] = results['max_interactions']
-    summary['meta']['max_frames_interaction'] = results['max_frame_interactions']
+    summary['meta']['max_rounds_per_sequence'] = results['max_rounds']
+
+    summary['meta']['total_interactions_over_dataset'] = results['total_num_interactions'][0]
+    all_interactions = results['all_interactions']
+    all_interactions_per_instance = results['all_interactions_per_instance']
+    
+    summary['meta']['total_rounds_over_dataset'] = results['total_num_rounds'][0]
+    all_rounds = results['all_rounds']
+    all_interactions_per_round = results['all_interactions_per_round']
+    
+    all_j_and_f = results['all_j_and_f']
+    all_jaccard = results['all_jaccard']
+    all_contour = results['all_contour']
+    all_ious = results['all_ious']
+
+    
     avg_iou_over_dataset = []
+    avg_jandf_over_dataset = []
+    total_failed_instances = []
+    total_failed_frames = []
+    total_failed_sequences = 0
+
     total_frames_over_dataset = []
     total_frames_interacted = []
     total_instances_over_dataset = []
     total_instances_interacted = []
-    total_failed_sequences = 0
-    total_failed_frames = []
+    
+    round_results = []
+
+    seqs = list(all_ious.keys())
     for seq in seqs:
         summary[seq] = {}
         ious = all_ious[seq]
-        summary[seq]['max_iou'] = max(ious)
-        summary[seq]['min_iou'] = min(ious)
-        summary[seq]['avg_iou'] = sum(ious)/len(ious)
-        avg_iou_over_dataset.append(summary[seq]['avg_iou'])
+
+        # metrics
+        summary[seq]['max_IoU'] = max(ious)
+        summary[seq]['min_IoU'] = min(ious)
+        summary[seq]['avg_IoU'] = sum(ious)/len(ious)
+        summary[seq]['max_J'] = max(all_jaccard[seq])
+        summary[seq]['min_J'] = min(all_jaccard[seq])
+        summary[seq]['avg_J'] = sum(all_jaccard[seq])/len(all_jaccard[seq])
+        summary[seq]['max_F'] = max(all_contour[seq])
+        summary[seq]['min_F'] = min(all_contour[seq])
+        summary[seq]['avg_F'] = sum(all_contour[seq])/len(all_contour[seq])
+        summary[seq]['avg_J_AND_F'] = sum(all_j_and_f[seq])/len(all_j_and_f[seq])
+        avg_iou_over_dataset.append(summary[seq]['avg_IoU'])
+        avg_jandf_over_dataset.append(summary[seq]['avg_J_AND_F'])
+        
+        # failed sequences
         total_failed_frames.append(sum(1 for i in ious if i < results['iou_threshold']))
-        if summary[seq]['avg_iou'] < results['iou_threshold']:
+        if summary[seq]['avg_IoU'] < results['iou_threshold']:
             total_failed_sequences +=1
 
         interactions = all_interactions[seq]    
@@ -171,24 +204,34 @@ def summarize_results(results):
         summary[seq]['frames_interacted'] = np.count_nonzero(np.array(interactions))
         total_frames_interacted.append(summary[seq]['frames_interacted'])
         summary[seq]['total_interactions'] = sum(interactions)
+        summary[seq]['num_of_rounds'] = all_rounds[seq]
 
         object_clicks = defaultdict(lambda:0)
-        for clicks in interactions_per_instance[seq]:
+        for clicks in all_interactions_per_instance[seq]:
             if len(clicks) !=0:
                 for c in range(len(clicks)):
                     object_clicks[c] += clicks[c]
         summary[seq]['instance_wise_interactions'] = list(object_clicks.items())
         total_instances_over_dataset.append(len(list(object_clicks.keys())))
         total_instances_interacted.append(np.count_nonzero(np.array(list(object_clicks.values()))))
+        
+        
+        for item in all_interactions_per_round[seq]:
+            #round, dynamite_loop, frame_idx, object_idx, num_interactions = item[0], item[1], item[2], item[3], item[4]
+            round_results.append([seq] + item)
+
+    df = pd.DataFrame(round_results, columns=['sequence', 'round', 'dynamite_loop', 'frame_idx', 'object_idx', 'num_interactions', 'frame_avg_iou', 'seq_avg_iou', 'seq_avg_j_and_f' ])
 
     summary['meta']['avg_iou_over_dataset'] = sum(avg_iou_over_dataset)/len(avg_iou_over_dataset)
-    summary['meta']['total_failed_sequences'] = total_failed_sequences
+    summary['meta']['avg_jandf_over_dataset'] = sum(avg_jandf_over_dataset)/len(avg_jandf_over_dataset)
     summary['meta']['total_frames_over_dataset'] = sum(total_frames_over_dataset)
     summary['meta']['total_frames_interacted'] = sum(total_frames_interacted)
-    summary['meta']['total_failed_frames'] = sum(total_failed_frames)
     summary['meta']['total_instances_over_dataset'] = sum(total_instances_over_dataset)
     summary['meta']['total_instances_interacted'] = sum(total_instances_interacted)
-    return summary
+    summary['meta']['total_failed_frames'] = sum(total_failed_frames)
+    summary['meta']['total_failed_sequences'] = total_failed_sequences
+
+    return summary,df
 
 
 
