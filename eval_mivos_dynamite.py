@@ -121,10 +121,12 @@ class Trainer(DefaultTrainer):
                 with open(os.path.join(vis_path,'results.json'), 'w') as f:
                     json.dump(results_i, f)
                 
-                summary,df = summarize_results(results_i)
+                summary, df = summarize_results(results_i)
+                summary_df = summarize_round_results(df)
                 with open(os.path.join(vis_path,'summary.json'), 'w') as f:
                     json.dump(summary, f)
                 df.to_csv(os.path.join(vis_path, 'round_results.csv'))
+                summary_df.to_csv(os.path.join(vis_path, 'round_summary.csv'))
                 
                 # results_i = comm.gather(results_i, dst=0)  # [res1:dict, res2:dict,...]
                 # if comm.is_main_process():
@@ -233,6 +235,35 @@ def summarize_results(results):
 
     return summary,df
 
+def summarize_round_results(df):
+    table = []
+    iou_threshold = 0.99
+    sequences = set(df['sequence'])
+    for seq in sequences:
+        entry = [seq]
+        df_seq = df[df['sequence']==seq]
+        # num interactions
+        num_interactions = max(df_seq['num_interactions'])
+        entry.append(num_interactions)  
+        entry.append(len(set(df_seq['round'])))
+        # IoU checkpoints
+        entry.append(iou_threshold)
+        checkpoints = [0.80, 0.85, 0.90, 0.95, 0.99]
+        frame_avg_iou = list(df_seq['frame_avg_iou'])
+        for idx, iou in enumerate(frame_avg_iou):
+            if iou != '-':
+                if float(iou)>=checkpoints[0]:
+                    t = checkpoints.pop(0)
+                    entry.append(idx)
+        for c in checkpoints:
+            entry.append(0)
+        entry.append(float(frame_avg_iou[-2]))     # IoU after last interaction
+        entry.append(float(list(df_seq['seq_avg_iou'])[-1]))
+        entry.append(float(list(df_seq['seq_avg_j_and_f'])[-1]))
+        table.append(entry)
+    
+    table_df = pd.DataFrame(table, columns=['sequence', 'num_interactions',  'num_rounds', 'IoU_threshold', 'IoU_0.80', 'IoU_0.85', 'IoU_0.90', 'IoU_0.95', 'IoU_0.99', 'IoU_last_interaction', 'seq_avg_IoU', 'seq_avg_J&F'])
+    return table_df
 
 
 def setup(args):
