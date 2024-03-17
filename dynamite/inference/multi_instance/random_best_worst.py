@@ -71,7 +71,8 @@ def evaluate(
     all_jaccard = {}
     all_contour = {}
     all_ious = {}
-    copy_iou_checkpoints = [0.80,0.85, 0.90, 0.92, 0.95, 0.99]
+    all_instance_level_iou = {}
+    copy_iou_checkpoints = [0.85, 0.90, 0.95, 0.99]
     
     with ExitStack() as stack:                                           
 
@@ -87,9 +88,10 @@ def evaluate(
         dataloader_dict = defaultdict(list)
         print(f'[EVALUATOR INFO] Iterating through the Data Loader...')
         # iterate through the data_loader, one image at a time
-        for idx, inputs in enumerate(data_loader):            
+        for idx, inputs in enumerate(data_loader):          
             curr_seq_name = inputs[0]["file_name"].split('/')[-2]
             dataloader_dict[curr_seq_name].append([idx, inputs])
+
 
         print(f'[EVALUATOR INFO] Sequence-wise evaluation...')
         for seq in list(dataloader_dict.keys()):
@@ -113,9 +115,11 @@ def evaluate(
             out_masks = None                                            # stores predicted masks by prop module, initially None
             all_interactions_per_round[seq] = []                           # records round-wise interaction details
             all_j_and_f[seq] = [0]                                      # records J&F metric score for the sequence
-            avg_iou = 0                                                 # records average IoU for the sequence
-            avg_jf = 0                                                  # records average J&F for the sequence
-            iou_checkpoints = [0.80,0.85, 0.90, 0.92, 0.95, 0.99]             # IoU checkpoints
+            seq_avg_iou = 0                                                 # records average IoU for the sequence
+            seq_avg_jf = 0                                                  # records average J&F for the sequence
+            iou_checkpoints = copy.deepcopy(copy_iou_checkpoints)            # IoU checkpoints
+            
+            instance_level_iou = [[]] * num_frames
             
             # start
             while lowest_frame_index!=-1:
@@ -158,26 +162,26 @@ def evaluate(
                     pred_masks = predictor.get_prediction(clicker)
                     clicker.set_pred_masks(pred_masks)
                 # instance-wise IoU
-                ious = clicker.compute_iou()                                                        
+                ious = clicker.compute_iou()
+                instance_level_iou[lowest_frame_index] = [iou.tolist() for iou in ious]
+                frame_avg_iou = sum(ious)/len(ious)                                                        
                 if vis_path:
                     clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)             
-
                 
-                # if the frame has never been interacted with
+                
+                # record the interaction, if the frame has never been interacted with
                 if not repeat:
                     total_num_interactions+=(num_instances)                                                       # counter over all dataset
                     num_interactions_for_sequence[lowest_frame_index] += num_instances              
                     num_interactions_per_instance_for_sequence[lowest_frame_index] = [1]*(num_instances+1)      
                     num_interactions_per_instance_for_sequence[lowest_frame_index][-1] = 0                        # no interaction for bg yet, so reset                    
                     
-                    # record first interactions (one-per-instance)
-                    i = 1
-                    for obj_idx in object_ids:
-                        if obj_idx == 0:    #bg
-                            all_interactions_per_round[seq].append([round_num, loop, lowest_frame_index, -1, 0, 0, avg_iou, avg_jf])             # round,loop,frame_idx,obj_idx,#interactions,frame_iou,seq_iou,seq_jf
-                        else:    
-                            all_interactions_per_round[seq].append([round_num, loop, lowest_frame_index, int(obj_idx), i, 0, avg_iou, avg_jf])
-                            i+=1
+                    # round,loop,frame_idx,obj_idx,#interactions,frame_iou,seq_iou,seq_jf
+                    all_interactions_per_round[seq].append([round_num, loop, 
+                                                           lowest_frame_index, list(map(int,object_ids - {0})), 
+                                                           num_interactions_for_sequence[lowest_frame_index],
+                                                           frame_avg_iou.item(),
+                                                           seq_avg_iou, seq_avg_jf])
                 
                 # interaction limit
                 max_iters_for_image = max_interactions * num_instances                                      
@@ -187,7 +191,8 @@ def evaluate(
 
                 #interative refinement loop                 
                 while (num_interactions_for_sequence[lowest_frame_index]<max_iters_for_image):               # 1st stopping criterion - if interaction budget is over
-                    if all(iou >= iou_checkpoints[0] for iou in ious):                                        # IoU checkpoints
+                    
+                    while all(iou >= iou_checkpoints[0] for iou in ious):                                    # IoU checkpoints
                         t = iou_checkpoints.pop(0)
                         print(f'[DynaMITe INFO][SEQ:{seq}][ROUND:{round_num}] Frame {lowest_frame_index} reached IoU Checkpoint {t} after {num_interactions_for_sequence[lowest_frame_index]} interactions.')
                     
@@ -223,12 +228,13 @@ def evaluate(
                         pred_masks = predictor.get_prediction(clicker)
                         clicker.set_pred_masks(pred_masks)
                         ious = clicker.compute_iou()
-                        
+                        #print(f'[DynaMITe REFINEMENT][SEQ:{seq}][ROUND:{round_num}][LOOP: {loop}] Frame {lowest_frame_index} Instance IoUs: {ious}')
                         if vis_path:
                             clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
                         
                         frame_avg_iou = sum(ious)/len(ious)
-                        all_interactions_per_round[seq].append([round_num, loop, lowest_frame_index, int(obj_index), num_interactions_for_sequence[lowest_frame_index], frame_avg_iou.item(), avg_iou, avg_jf])
+                        instance_level_iou[lowest_frame_index] = [iou.tolist() for iou in ious]
+                        all_interactions_per_round[seq].append([round_num, loop, lowest_frame_index, int(obj_index), num_interactions_for_sequence[lowest_frame_index], frame_avg_iou.item(), seq_avg_iou, seq_avg_jf])
                     
                 # store clicker and predictor, in case this frame needs to be interacted with again
                 clicker_dict[lowest_frame_index] = clicker
@@ -263,13 +269,13 @@ def evaluate(
 
                 j_and_f = 0.5*jaccard_mean + 0.5*contour_mean
                 j_and_f = j_and_f.tolist()
-                avg_jf = sum(j_and_f)/len(j_and_f)
+                seq_avg_jf = sum(j_and_f)/len(j_and_f)
 
                 iou_for_sequence = compute_iou_for_sequence(out_masks, all_gt_masks[seq])
-                avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)
-                print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {avg_iou}, Average J&F: {avg_jf}')
+                seq_avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)
+                print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {seq_avg_iou}, Average J&F: {seq_avg_jf}')
                 
-                all_interactions_per_round[seq].append([round_num, '-', '-', '-', sum(num_interactions_for_sequence), '-', avg_iou, avg_jf])
+                all_interactions_per_round[seq].append([round_num, '-', '-', '-', sum(num_interactions_for_sequence), '-', seq_avg_iou, seq_avg_jf])
                 
                 # Check stopping criteria
                 iou_copy = copy.deepcopy(iou_for_sequence)
@@ -278,7 +284,7 @@ def evaluate(
                     if min_iou < iou_threshold:         # 1. whether all frames meet IoU threshold
                         if round_num == max_rounds:     # 2. whether round budget is over
                             print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] Maximum round limit ({max_rounds}) reached!')
-                            print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {avg_iou} ')
+                            print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
                             lowest_frame_index = -1
                             break
                         lowest_frame_index = iou_copy.index(min_iou)
@@ -289,13 +295,13 @@ def evaluate(
                             if len(iou_copy)==0:                                                         # 3. whether interaction budget is over for all frames
                                 lowest_frame_index = -1
                                 print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] Ran out of click budget for all frames!')
-                                print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {avg_iou} ')
+                                print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
                                 break
                         else:
                             break                        
                     else:
                         lowest_frame_index = -1
-                        print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {avg_iou} ')
+                        print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
                         break
                          
 
@@ -307,6 +313,7 @@ def evaluate(
             # store #interactions for entire sequence
             all_interactions[seq] = num_interactions_for_sequence
             all_interactions_per_instance[seq] = num_interactions_per_instance_for_sequence
+            all_instance_level_iou[seq] = instance_level_iou
             all_rounds[seq] = round_num
 
             # store metrics for entire sequence
@@ -324,7 +331,7 @@ def evaluate(
                 'iou_threshold': iou_threshold,
                 'max_interactions': max_interactions,
                 'max_rounds': max_rounds,
-                'iou_checkpoints': iou_checkpoints,
+                'iou_checkpoints': copy_iou_checkpoints,
                 
                 'total_num_interactions': [total_num_interactions],
                 'all_interactions': all_interactions,
@@ -334,6 +341,7 @@ def evaluate(
                 'all_rounds': all_rounds,
                 'all_interactions_per_round': all_interactions_per_round,
 
+                'all_instance_level_iou': all_instance_level_iou,
                 'all_j_and_f' : all_j_and_f,
                 'all_jaccard' : all_jaccard,
                 'all_contour' : all_contour,

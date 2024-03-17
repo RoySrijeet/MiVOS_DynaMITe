@@ -122,10 +122,11 @@ class Trainer(DefaultTrainer):
                     json.dump(results_i, f)
                 
                 summary, df = summarize_results(results_i)
-                summary_df = summarize_round_results(df)
+                df.to_csv(os.path.join(vis_path, 'round_results.csv'))
+                summary_df = summarize_round_results(df, iou_threshold)
                 with open(os.path.join(vis_path,'summary.json'), 'w') as f:
                     json.dump(summary, f)
-                df.to_csv(os.path.join(vis_path, 'round_results.csv'))
+                
                 summary_df.to_csv(os.path.join(vis_path, 'round_summary.csv'))
                 
                 # results_i = comm.gather(results_i, dst=0)  # [res1:dict, res2:dict,...]
@@ -151,11 +152,12 @@ def summarize_results(results):
     summary['meta']['total_interactions_over_dataset'] = results['total_num_interactions'][0]
     all_interactions = results['all_interactions']
     all_interactions_per_instance = results['all_interactions_per_instance']
-    
+
     summary['meta']['total_rounds_over_dataset'] = results['total_num_rounds'][0]
     all_rounds = results['all_rounds']
     all_interactions_per_round = results['all_interactions_per_round']
     
+    all_instance_level_iou = results['all_instance_level_iou']
     all_j_and_f = results['all_j_and_f']
     all_jaccard = results['all_jaccard']
     all_contour = results['all_contour']
@@ -172,6 +174,7 @@ def summarize_results(results):
     total_frames_interacted = []
     total_instances_over_dataset = []
     total_instances_interacted = []
+    total_background_clicks = 0
     
     round_results = []
 
@@ -184,20 +187,33 @@ def summarize_results(results):
         summary[seq]['max_IoU'] = max(ious)
         summary[seq]['min_IoU'] = min(ious)
         summary[seq]['avg_IoU'] = sum(ious)/len(ious)
+
         summary[seq]['max_J'] = max(all_jaccard[seq])
         summary[seq]['min_J'] = min(all_jaccard[seq])
         summary[seq]['avg_J'] = sum(all_jaccard[seq])/len(all_jaccard[seq])
+
         summary[seq]['max_F'] = max(all_contour[seq])
         summary[seq]['min_F'] = min(all_contour[seq])
         summary[seq]['avg_F'] = sum(all_contour[seq])/len(all_contour[seq])
+
         summary[seq]['avg_J_AND_F'] = sum(all_j_and_f[seq])/len(all_j_and_f[seq])
+        
         avg_iou_over_dataset.append(summary[seq]['avg_IoU'])
         avg_jandf_over_dataset.append(summary[seq]['avg_J_AND_F'])
         
-        # failed sequences
+        # failed sequences, frames, instances
         total_failed_frames.append(sum(1 for i in ious if i < results['iou_threshold']))
         if summary[seq]['avg_IoU'] < results['iou_threshold']:
             total_failed_sequences +=1
+        
+        instance_level_iou = all_instance_level_iou[seq]
+        failed_instances = 0
+        for ious in instance_level_iou:
+            if len(ious) !=0:
+                for iou in ious:
+                    if iou < results['iou_threshold']:
+                        failed_instances += 1
+        total_failed_instances.append(failed_instances)
 
         interactions = all_interactions[seq]    
 
@@ -211,15 +227,16 @@ def summarize_results(results):
         object_clicks = defaultdict(lambda:0)
         for clicks in all_interactions_per_instance[seq]:
             if len(clicks) !=0:
-                for c in range(len(clicks)):
-                    object_clicks[c] += clicks[c]
+                for c in range(len(clicks)):      # last click for bg
+                    if c==len(clicks):  # bg click
+                        total_background_clicks += clicks[c]
+                    else:
+                        object_clicks[c] += clicks[c]
         summary[seq]['instance_wise_interactions'] = list(object_clicks.items())
         total_instances_over_dataset.append(len(list(object_clicks.keys())))
         total_instances_interacted.append(np.count_nonzero(np.array(list(object_clicks.values()))))
         
-        
         for item in all_interactions_per_round[seq]:
-            #round, dynamite_loop, frame_idx, object_idx, num_interactions = item[0], item[1], item[2], item[3], item[4]
             round_results.append([seq] + item)
 
     df = pd.DataFrame(round_results, columns=['sequence', 'round', 'dynamite_loop', 'frame_idx', 'object_idx', 'num_interactions', 'frame_avg_iou', 'seq_avg_iou', 'seq_avg_j_and_f' ])
@@ -230,41 +247,45 @@ def summarize_results(results):
     summary['meta']['total_frames_interacted'] = sum(total_frames_interacted)
     summary['meta']['total_instances_over_dataset'] = sum(total_instances_over_dataset)
     summary['meta']['total_instances_interacted'] = sum(total_instances_interacted)
-    summary['meta']['total_failed_frames'] = sum(total_failed_frames)
     summary['meta']['total_failed_sequences'] = total_failed_sequences
+    summary['meta']['total_failed_frames'] = sum(total_failed_frames)    
+    summary['meta']['total_failed_instances'] = sum(total_failed_instances)
 
     return summary,df
 
-def summarize_round_results(df):
+def summarize_round_results(df, iou_threshold):
     table = []
-    iou_threshold = 0.99
     sequences = set(df['sequence'])
     for seq in sequences:
         entry = [seq]
-        df_seq = df[df['sequence']==seq]
+        df_seq = df[df['sequence']==seq].reset_index(drop=True)
         # num interactions
-        num_interactions = max(df_seq['num_interactions'])
+        num_instances = len(df_seq['object_idx'][0])
+        entry.append(num_instances)
+        num_interactions = list(df_seq['num_interactions'])[-1]
         entry.append(num_interactions)  
-        entry.append(len(set(df_seq['round'])))
+        num_rounds = list(df_seq['round'])[-1]
+        entry.append(num_rounds)
         # IoU checkpoints
         entry.append(iou_threshold)
-        checkpoints = [0.80, 0.85, 0.90, 0.95, 0.99]
-        frame_avg_iou = list(df_seq['frame_avg_iou'])
+        checkpoints = [0.85, 0.90, 0.95, 0.99]
+        frame_avg_iou = list(map(float,list(df_seq['frame_avg_iou'])[:-1]))
+        max_iou = max(frame_avg_iou)
+        max_idx = df_seq['num_interactions'][frame_avg_iou.index(max_iou)]
         for idx, iou in enumerate(frame_avg_iou):
-            if iou != '-':
-                if float(iou)>=checkpoints[0]:
-                    t = checkpoints.pop(0)
-                    entry.append(idx)
+            while float(iou)>=checkpoints[0]:
+                t = checkpoints.pop(0)
+                entry.append(df_seq['num_interactions'][idx])
         for c in checkpoints:
             entry.append(0)
-        entry.append(float(frame_avg_iou[-2]))     # IoU after last interaction
+        entry.append(float(frame_avg_iou[-1]))     # IoU after last interaction
+        entry.append([max_iou, max_idx])           # max IoU reached
         entry.append(float(list(df_seq['seq_avg_iou'])[-1]))
         entry.append(float(list(df_seq['seq_avg_j_and_f'])[-1]))
         table.append(entry)
     
-    table_df = pd.DataFrame(table, columns=['sequence', 'num_interactions',  'num_rounds', 'IoU_threshold', 'IoU_0.80', 'IoU_0.85', 'IoU_0.90', 'IoU_0.95', 'IoU_0.99', 'IoU_last_interaction', 'seq_avg_IoU', 'seq_avg_J&F'])
+    table_df = pd.DataFrame(table, columns=['sequence', 'num_instances', 'num_interactions',  'num_rounds', 'iou_threshold', 'iou_0.85', 'iou_0.90', 'iou_0.95', 'iou_0.99', 'iou_end', '[max_iou, idx]', 'seq_avg_iou', 'seq_avg_jandf'])
     return table_df
-
 
 def setup(args):
     """
