@@ -175,6 +175,7 @@ def summarize_results(results):
     total_instances_over_dataset = []
     total_instances_interacted = []
     total_background_clicks = 0
+    total_foreground_clicks = 0
     
     round_results = []
 
@@ -228,9 +229,10 @@ def summarize_results(results):
         for clicks in all_interactions_per_instance[seq]:
             if len(clicks) !=0:
                 for c in range(len(clicks)):      # last click for bg
-                    if c==len(clicks):  # bg click
+                    if c==len(clicks)-1:  # bg click
                         total_background_clicks += clicks[c]
                     else:
+                        total_foreground_clicks += clicks[c]
                         object_clicks[c] += clicks[c]
         summary[seq]['instance_wise_interactions'] = list(object_clicks.items())
         total_instances_over_dataset.append(len(list(object_clicks.keys())))
@@ -241,12 +243,18 @@ def summarize_results(results):
 
     df = pd.DataFrame(round_results, columns=['sequence', 'round', 'dynamite_loop', 'frame_idx', 'object_idx', 'num_interactions', 'frame_avg_iou', 'seq_avg_iou', 'seq_avg_j_and_f' ])
 
+    summary['meta']['total_foreground_interactions_over_dataset'] = total_foreground_clicks
+    summary['meta']['total_background_interactions_over_dataset'] = total_background_clicks
+    
     summary['meta']['avg_iou_over_dataset'] = sum(avg_iou_over_dataset)/len(avg_iou_over_dataset)
     summary['meta']['avg_jandf_over_dataset'] = sum(avg_jandf_over_dataset)/len(avg_jandf_over_dataset)
+    
     summary['meta']['total_frames_over_dataset'] = sum(total_frames_over_dataset)
     summary['meta']['total_frames_interacted'] = sum(total_frames_interacted)
+    
     summary['meta']['total_instances_over_dataset'] = sum(total_instances_over_dataset)
     summary['meta']['total_instances_interacted'] = sum(total_instances_interacted)
+    
     summary['meta']['total_failed_sequences'] = total_failed_sequences
     summary['meta']['total_failed_frames'] = sum(total_failed_frames)    
     summary['meta']['total_failed_instances'] = sum(total_failed_instances)

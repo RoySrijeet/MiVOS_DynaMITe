@@ -92,7 +92,6 @@ def evaluate(
             curr_seq_name = inputs[0]["file_name"].split('/')[-2]
             dataloader_dict[curr_seq_name].append([idx, inputs])
 
-
         print(f'[EVALUATOR INFO] Sequence-wise evaluation...')
         for seq in list(dataloader_dict.keys()):
             print(f'\n[SEQUENCE INFO] Sequence: {seq}')
