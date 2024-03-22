@@ -293,6 +293,20 @@ def summarize_round_results(df, iou_threshold):
         table.append(entry)
     
     table_df = pd.DataFrame(table, columns=['sequence', 'num_instances', 'num_interactions',  'num_rounds', 'iou_threshold', 'iou_0.85', 'iou_0.90', 'iou_0.95', 'iou_0.99', 'iou_end', '[max_iou, idx]', 'seq_avg_iou', 'seq_avg_jandf'])
+    final_entry = ['TOTAL']
+    final_entry.append(table_df['num_instances'].sum())
+    final_entry.append(table_df['num_interactions'].sum())
+    final_entry.append(table_df['num_rounds'].sum())
+    final_entry.append(iou_threshold)
+    final_entry.append(np.count_nonzero(table_df['iou_0.85']))
+    final_entry.append(np.count_nonzero(table_df['iou_0.90']))
+    final_entry.append(np.count_nonzero(table_df['iou_0.95']))
+    final_entry.append(np.count_nonzero(table_df['iou_0.99']))
+    final_entry.append(table_df['iou_end'].mean())
+    final_entry.append('-')
+    final_entry.append(table_df['seq_avg_iou'].mean())
+    final_entry.append(table_df['seq_avg_jandf'].mean())
+    table_df.loc[len(table_df)] = final_entry
     return table_df
 
 def setup(args):

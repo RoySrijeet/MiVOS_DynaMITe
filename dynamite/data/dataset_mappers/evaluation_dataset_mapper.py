@@ -206,7 +206,7 @@ def get_instance_map(masks):
 
     mask_areas = torch.sum(masks, (1,2))
     masks = masks.to(dtype=torch.uint8)
-    masks =  masks[sorted(range(len(mask_areas)),key=mask_areas.__getitem__,reverse=True)]
+    #masks =  masks[sorted(range(len(mask_areas)),key=mask_areas.__getitem__,reverse=True)]
 
     instance_map = torch.zeros((masks.shape[-2:]), dtype=torch.int16)
     num_objects = masks.shape[0]

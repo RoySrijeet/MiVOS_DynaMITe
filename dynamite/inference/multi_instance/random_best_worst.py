@@ -88,7 +88,7 @@ def evaluate(
         dataloader_dict = defaultdict(list)
         print(f'[EVALUATOR INFO] Iterating through the Data Loader...')
         # iterate through the data_loader, one image at a time
-        for idx, inputs in enumerate(data_loader):          
+        for idx, inputs in enumerate(data_loader):                     
             curr_seq_name = inputs[0]["file_name"].split('/')[-2]
             dataloader_dict[curr_seq_name].append([idx, inputs])
 
@@ -260,7 +260,7 @@ def evaluate(
                 
                 # Propagate
                 print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Temporal propagation in progress...')
-                out_masks = processor.interact(pred_masks,lowest_frame_index)                
+                out_masks = processor.interact(pred_masks,lowest_frame_index)
 
                 # metrics (mean: over instances in a frame)
                 jaccard_mean, jaccard_instances = batched_jaccard(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
