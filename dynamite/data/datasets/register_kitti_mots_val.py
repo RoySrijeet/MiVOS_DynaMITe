@@ -1,4 +1,3 @@
-
 import logging
 import os
 from detectron2.data import DatasetCatalog, MetadataCatalog

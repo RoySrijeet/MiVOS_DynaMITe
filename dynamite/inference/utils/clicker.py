@@ -286,7 +286,7 @@ class Clicker:
             self.pred_masks = self.pred_masks[index][None,:,:] 
             return [ious[index]]
 
-    def save_visualization(self, save_results_path, ious=None, num_interactions=None, alpha_blend =0.6, click_radius=5, round_num=0):
+    def save_visualization(self, save_results_path, ious=None, num_interactions=None, alpha_blend =0.6, click_radius=5, round_num=0, save_tensor=None):
         
         if num_interactions==0:     # no interactions on the image yet - gt mask
             result_masks_for_vis = self.gt_masks
@@ -332,6 +332,10 @@ class Clicker:
         else:
             iou_val = ious
         cv2.imwrite(os.path.join(save_dir, f"tau_{num_interactions}_{iou_val}_{round_num}.jpg"), image)
+        if save_tensor is not None:
+            mask_path = os.path.join(save_dir, 'mask_tensors')
+            os.makedirs(mask_path, exist_ok=True)
+            torch.save(save_tensor, os.path.join(mask_path,f"tau_{num_interactions}_{iou_val}_{round_num}.pt"))
     
     def apply_mask(self, image, mask, color, alpha=0.5):
         for c in range(3):

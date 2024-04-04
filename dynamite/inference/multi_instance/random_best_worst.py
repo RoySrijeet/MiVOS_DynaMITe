@@ -1,51 +1,27 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-import csv
-import datetime
+import os
 import logging
 logging.basicConfig(level=logging.INFO)
-import os
-import time
 from contextlib import ExitStack, contextmanager
 import copy
 import numpy as np
 import torch
 import random
-from collections import defaultdict
-from torchvision import transforms
 from detectron2.utils.comm import get_world_size        # utils.comm -> primitives for multi-gpu communication
 from torch import nn
 from ..utils.clicker import Clicker
 from ..utils.predictor import Predictor
-from PIL import Image
 from inference_core import InferenceCore
 from metrics.j_and_f_scores import batched_jaccard,batched_f_measure
 
+
 def evaluate(
     model, propagation_model, fusion_model,
-    data_loader, iou_threshold = 0.85, max_interactions = 10, sampling_strategy=1,
-    eval_strategy = "worst", seed_id = 0, vis_path = None, max_rounds=0
+    dataloader_dict, all_images, all_gt_masks,
+    iou_threshold = 0.85, max_interactions = 10, sampling_strategy=1,
+    eval_strategy = "worst", seed_id = 0, vis_path = None, max_rounds=0,dataset_name="davis_2017_val"
 ):
-    """
-    Run model on the data_loader and return a dict, later used to calculate all the metrics for multi-instance inteactive segmentation such as NCI,
-    NFO, NFI, and Avg IoU. The model will be used in eval mode.
 
-    Arguments:
-        model (callable): a callable which takes an object from `data_loader` and returns some outputs.
-            If it's an nn.Module, it will be temporarily set to `eval` mode.
-            If you wish to evaluate a model in `training` mode instead, you can wrap the given model and override its behavior of `.eval()` and `.train()`.
-        data_loader: an iterable object with a length. The elements it generates will be the inputs to the model.
-        iou_threshold: float - Desired IoU value for each object mask
-        max_interactions: int - Maxinum number of interactions per object
-        sampling_strategy: int - Strategy to avaoid regions while sampling next clicks
-            0: new click sampling avoids all the previously sampled click locations
-            1: new click sampling avoids all locations upto radius 5 around all the previously sampled click locations
-        eval_strategy: str - Click sampling strategy during refinement (random, best, worst)
-        seed_id: int - Used to generate fixed seed during evaluation
-        vis_path: str - Path to save visualization of masks with clicks during evaluation
-
-    Returns:
-        Dict
-    """
     # args
     print(f'[EVALUATOR INFO] IoU Threshold: {iou_threshold}')
     print(f'[EVALUATOR INFO] Max Interactions per Frame: {max_interactions}')
@@ -55,13 +31,8 @@ def evaluate(
 
     num_devices = get_world_size()
     logger = logging.getLogger(__name__)
-    logger.info("Start inference on {} batches".format(len(data_loader)))                       # 1999 (davis_2017_val)
+    logger.info("Start inference on {} batches".format(len(dataloader_dict)))                       # 1999 (davis_2017_val)
     logger.info(f"Using {eval_strategy} evaluation strategy with random seed {seed_id}")
-    
-    print(f'[EVALUATOR INFO] Loading all frames from the disc...')
-    all_images = load_images()
-    print(f'[EVALUATOR INFO] Loading all ground truth masks from the disc...')
-    all_gt_masks = load_gt_masks()
     
     all_interactions = {}
     all_interactions_per_round = {}
@@ -73,6 +44,7 @@ def evaluate(
     all_ious = {}
     all_instance_level_iou = {}
     copy_iou_checkpoints = [0.85, 0.90, 0.95, 0.99]
+
     
     with ExitStack() as stack:                                           
 
@@ -83,14 +55,7 @@ def evaluate(
         total_num_interactions = 0                                       # for whole dataset       
         total_num_rounds = 0                                             # for whole dataset
 
-        random.seed(123456+seed_id)
-        
-        dataloader_dict = defaultdict(list)
-        print(f'[EVALUATOR INFO] Iterating through the Data Loader...')
-        # iterate through the data_loader, one image at a time
-        for idx, inputs in enumerate(data_loader):                     
-            curr_seq_name = inputs[0]["file_name"].split('/')[-2]
-            dataloader_dict[curr_seq_name].append([idx, inputs])
+        random.seed(123456+seed_id)                
 
         print(f'[EVALUATOR INFO] Sequence-wise evaluation...')
         for seq in list(dataloader_dict.keys()):
@@ -133,11 +98,14 @@ def evaluate(
                     clicker = Clicker(inputs, sampling_strategy)
                     predictor = Predictor(model)
                     repeat = False
+                    print(f'clicker ground truth:{type(clicker.gt_masks)}, {clicker.gt_masks.shape}')
+                    #torch.save(clicker.gt_masks, os.path.join(vis_path,f"clicker_gt_mask_{seq}_{round_num}.pt"))
                 else:                                                  
                     clicker = clicker_dict[lowest_frame_index]
                     predictor = predictor_dict[lowest_frame_index]
                     repeat = True
                 
+
                 #check for missing objects
                 object_ids = set(np.unique(all_gt_masks[seq][lowest_frame_index]))                  # objects present in the frame                
                 num_instances = clicker.num_instances
@@ -165,7 +133,7 @@ def evaluate(
                 instance_level_iou[lowest_frame_index] = [iou.tolist() for iou in ious]
                 frame_avg_iou = sum(ious)/len(ious)                                                        
                 if vis_path:
-                    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)             
+                    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_tensor=pred_masks)
                 
                 
                 # record the interaction, if the frame has never been interacted with
@@ -229,7 +197,7 @@ def evaluate(
                         ious = clicker.compute_iou()
                         #print(f'[DynaMITe REFINEMENT][SEQ:{seq}][ROUND:{round_num}][LOOP: {loop}] Frame {lowest_frame_index} Instance IoUs: {ious}')
                         if vis_path:
-                            clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num)
+                            clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_tensor=pred_masks)
                         
                         frame_avg_iou = sum(ious)/len(ious)
                         instance_level_iou[lowest_frame_index] = [iou.tolist() for iou in ious]
@@ -238,6 +206,9 @@ def evaluate(
                 # store clicker and predictor, in case this frame needs to be interacted with again
                 clicker_dict[lowest_frame_index] = clicker
                 predictor_dict[lowest_frame_index] = predictor
+
+                print(f'dynamite raw prediction: {type(pred_masks)}, {pred_masks.shape}')
+                #torch.save(pred_masks, os.path.join(vis_path,f"dynamite_raw_prediction_{seq}_{round_num}.pt"))
 
                 # account for missing objects
                 if pred_masks.shape[0] != seq_num_instances:
@@ -248,7 +219,9 @@ def evaluate(
                             continue
                         dummy[i][np.where(pred_masks[j]==1)] = 1
                         j +=1
-                    pred_masks = torch.from_numpy(dummy)
+                    pred_masks = torch.from_numpy(dummy)                
+                    print(f'adding missing objects: {type(pred_masks)}, {pred_masks.shape}')
+                    #torch.save(pred_masks, os.path.join(vis_path,f"dynamite_output_with_missing_objects_{seq}_{round_num}.pt"))
 
                 # compute background mask                                                                                   # MiVOS propagation expects (num_instances+1, 1, H, W)
                 bg_mask = np.ones(pred_masks.shape[-2:])                
@@ -257,10 +230,15 @@ def evaluate(
                 bg_mask = torch.from_numpy(bg_mask).unsqueeze(0)                                                            # H,W -> 1,H,W
                 pred_masks = torch.cat((bg_mask,pred_masks),dim=0)                                                          # [bg, inst1, inst2, ..]
                 pred_masks = pred_masks.unsqueeze(1).float()                                                                # num_inst+1, H, W -> num_inst+1,1, H, W
+                print(f'adding background: {type(pred_masks)}, {pred_masks.shape}')
+                #torch.save(pred_masks, os.path.join(vis_path,f"dynamite_output_with_bg_{seq}_{round_num}.pt"))
                 
                 # Propagate
                 print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Temporal propagation in progress...')
                 out_masks = processor.interact(pred_masks,lowest_frame_index)
+
+                print(f'propagation output: {type(out_masks)}, {out_masks.shape}')
+                np.save(os.path.join(vis_path, f"propagation_output_{seq}_{round_num}.npy"), out_masks)
 
                 # metrics (mean: over instances in a frame)
                 jaccard_mean, jaccard_instances = batched_jaccard(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
@@ -363,41 +341,6 @@ def inference_context(model):
     yield
     model.train(training_mode)
 
-def load_images(path:str ='/globalwork/roy/dynamite_video/mivos/MiVOS/datasets/DAVIS/DAVIS-2017-trainval')-> dict:
-    val_set = os.path.join(path,'ImageSets/2017/val.txt')
-    with open(val_set, 'r') as f:
-        seqs = [line.rstrip('\n') for line in f.readlines()]
-    all_images = {}
-    image_path = os.path.join(path,'JPEGImages/480p')
-    transform = transforms.Compose([transforms.ToTensor()])
-    for s in seqs:
-        seq_images = []
-        seq_path = os.path.join(image_path, s)
-        for file in os.listdir(seq_path):
-            if file.endswith('.jpg'):
-                im = Image.open(os.path.join(seq_path, file))
-                im = transform(im)
-                seq_images.append(im)
-        seq_images = torch.stack(seq_images)
-        all_images[s] = seq_images
-    return all_images
-
-def load_gt_masks(path:str='/globalwork/roy/dynamite_video/mivos/MiVOS/datasets/DAVIS/DAVIS-2017-trainval')-> dict:
-    val_set = os.path.join(path,'ImageSets/2017/val.txt')
-    with open(val_set, 'r') as f:
-        seqs = [line.rstrip('\n') for line in f.readlines()]
-    all_gt_masks = {}
-    mask_path = os.path.join(path,'Annotations/480p')
-    for s in seqs:
-        seq_images = []
-        seq_path = os.path.join(mask_path, s)
-        for file in os.listdir(seq_path):
-            if file.endswith('.png'):
-                im = np.asarray(Image.open(os.path.join(seq_path, file)))
-                seq_images.append(im)
-        seq_images = np.asarray(seq_images)
-        all_gt_masks[s] = seq_images
-    return all_gt_masks
 
 def compute_iou_for_sequence(pred: np.ndarray, gt: np.ndarray) -> list:
     ious = []

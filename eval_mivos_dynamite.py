@@ -1,6 +1,5 @@
 #Adapted by Srijeet Roy from: https://github.com/amitrana001/DynaMITe/blob/main/train_net.py
 
-import csv
 import numpy as np
 try:
     from shapely.errors import ShapelyDeprecationWarning
@@ -9,11 +8,14 @@ try:
 except:
     pass
 
-import copy
+import os
+import itertools
+import pandas as pd
+from PIL import Image
+from torchvision import transforms
+from collections import defaultdict
 import itertools
 import logging
-
-from typing import Any, Dict, List, Set
 
 import torch
 import torch.multiprocessing
@@ -34,22 +36,31 @@ from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.logger import setup_logger
 
-from dynamite import (
-    COCOLVISDatasetMapper, EvaluationDatasetMapper
-)
-
-from dynamite import (
-    add_maskformer2_config,
-    add_hrnet_config
-)
-
+from dynamite import COCOLVISDatasetMapper, EvaluationDatasetMapper
+from dynamite import add_maskformer2_config,add_hrnet_config
 from dynamite.inference.utils.eval_utils import log_single_instance, log_multi_instance
+
 # MiVOS
 from model.propagation.prop_net import PropagationNetwork
 from model.fusion_net import FusionNet
-import os
-from collections import defaultdict
-import pandas as pd
+
+from metrics.summary import summarize_results,summarize_round_results
+
+
+_root = "/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/datasets/"
+_DATASET_PATH = {
+    "davis_2017_val": {
+        "annotations": "DAVIS/DAVIS-2017-trainval/Annotations/480p",
+        "images": "DAVIS/DAVIS-2017-trainval/JPEGImages/480p",
+        "sets": "DAVIS/DAVIS-2017-trainval/ImageSets/2017/val.txt",
+    },
+    "mose": {},
+    "kitti_mots_val": {
+        "annotations": "KITTI_masks/val",
+        "images": "KITTI_MOTS/train/images",
+        "sets": "KITTI_masks/ImageSets/val.txt",
+    },
+}
 
 class Trainer(DefaultTrainer):
     """
@@ -81,19 +92,19 @@ class Trainer(DefaultTrainer):
             iou_threshold = args.iou_threshold
             max_interactions = args.max_interactions
             max_rounds = args.max_rounds
-            first_frame_only = args.first_frame_only
         
-        assert iou_threshold>=0.80
+        if not isinstance(iou_threshold, list):                
+            iou_threshold = [iou_threshold]
+        if not isinstance(max_interactions, list):                
+            max_interactions = [max_interactions]
+        
         for dataset_name in eval_datasets:
 
-            if dataset_name in ["davis_2017_val","mose","sbd_multi_insts","coco_2017_val"]:
-                print(f'[INFO] Initiating Multi-Instance Evaluation on {eval_datasets}...')
+            if dataset_name in ["davis_2017_val","mose", "kitti_mots_val","coco_2017_val"]:
+                print(f'[INFO] Initiating Multi-Instance Evaluation on {dataset_name}...')
                 
                 if eval_strategy in ["random", "best", "worst"]:
-                    if first_frame_only:
-                        from dynamite.inference.multi_instance.random_best_worst_ff import evaluate
-                    else:
-                        from dynamite.inference.multi_instance.random_best_worst import evaluate
+                    from dynamite.inference.multi_instance.random_best_worst import evaluate
                 elif eval_strategy == "max_dt":
                     from dynamite.inference.multi_instance.max_dt import evaluate
                 elif eval_strategy == "wlb":
@@ -101,213 +112,92 @@ class Trainer(DefaultTrainer):
                 elif eval_strategy == "round_robin":
                     from dynamite.inference.multi_instance.round_robin import evaluate
                 
-                print(f'[INFO] Loaded Evaluation routine following {eval_strategy} evaluation strategy!')
+                print(f'[INFO] Loaded Evaluation routine following {eval_strategy} evaluation strategy!')                                
+
+                print(f'[INFO] Loading all frames from the disc...')
+                all_images = load_images(dataset_name)
+                print(f'[INFO] Loading all ground truth masks from the disc...')
+                all_gt_masks = load_gt_masks(dataset_name)
                 
                 print(f'[INFO] Loading test data loader from {dataset_name}...')
                 data_loader = cls.build_test_loader(cfg, dataset_name)
                 print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
+                dataloader_dict = defaultdict(list)
+                print(f'[INFO] Iterating through the Data Loader...')
+                # iterate through the data_loader, one image at a time
+                for idx, inputs in enumerate(data_loader):                     
+                    curr_seq_name = inputs[0]["file_name"].split('/')[-2]
+                    dataloader_dict[curr_seq_name].append([idx, inputs])
+                                                
+                for iou, interactions in list(itertools.product(iou_threshold, max_interactions)):
+                    #save_path = os.path.join(vis_path, f'{interactions}_interactions/iou_{int(iou*100)}')
+                    save_path = vis_path
+                    os.makedirs(save_path, exist_ok=True) 
+
+                    print(f'[INFO] Starting evaluation...')
+                    save_path_vis = os.path.join(save_path, 'vis')
+                    os.makedirs(save_path_vis, exist_ok=True)
+                    results_i = evaluate(dynamite_model, propagation_model, fusion_model, 
+                                        dataloader_dict, all_images, all_gt_masks,
+                                        iou_threshold = iou,
+                                        max_interactions = interactions,
+                                        eval_strategy = eval_strategy, 
+                                        seed_id=seed_id,
+                                        vis_path=save_path_vis, 
+                                        max_rounds=max_rounds, 
+                                        dataset_name=dataset_name)
+                    
+                    print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
+
+                    import json
+                    with open(os.path.join(save_path,f'results_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                        json.dump(results_i, f)
+                    
+                    summary, df = summarize_results(results_i)
+                    df.to_csv(os.path.join(save_path, f'round_results_{interactions}_interactions_iou_{int(iou*100)}.csv'))
+                    summary_df = summarize_round_results(df, iou_threshold)
+                    with open(os.path.join(save_path,f'summary_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                        json.dump(summary, f)
+                    
+                    summary_df.to_csv(os.path.join(save_path, f'round_summary_{interactions}_interactions_iou_{int(iou*100)}.csv'))
                 
-                print(f'[INFO] Starting evaluation...')
-                vis_path_vis = os.path.join(vis_path, 'vis')
-                os.makedirs(vis_path_vis, exist_ok=True)
-                results_i = evaluate(dynamite_model, propagation_model, fusion_model, data_loader, iou_threshold = iou_threshold,
-                                    max_interactions = max_interactions,
-                                    eval_strategy = eval_strategy, seed_id=seed_id,
-                                    vis_path=vis_path_vis, max_rounds=max_rounds)
-                
-                print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
+def load_images(dataset_name="davis_2017_val"):
+    val_set = os.path.join(_root,_DATASET_PATH[dataset_name]["sets"])
 
-                import json
-                with open(os.path.join(vis_path,'results.json'), 'w') as f:
-                    json.dump(results_i, f)
-                
-                summary, df = summarize_results(results_i)
-                df.to_csv(os.path.join(vis_path, 'round_results.csv'))
-                summary_df = summarize_round_results(df, iou_threshold)
-                with open(os.path.join(vis_path,'summary.json'), 'w') as f:
-                    json.dump(summary, f)
-                
-                summary_df.to_csv(os.path.join(vis_path, 'round_summary.csv'))
-                
-                # results_i = comm.gather(results_i, dst=0)  # [res1:dict, res2:dict,...]
-                # if comm.is_main_process():
-                #     # sum the values with same keys
-                #     assert len(results_i) > 0
-                #     res_gathered = results_i[0]
-                #     results_i.pop(0)
-                #     for _d in results_i:
-                #         for k in _d.keys():
-                #             res_gathered[k] += _d[k]
-                #     log_multi_instance(res_gathered, max_interactions=max_interactions,
-                #                     dataset_name=dataset_name, iou_threshold=iou_threshold)
-
-def summarize_results(results):
-    summary = defaultdict()
-    summary['meta'] = {}
-    summary['meta']['iou_threshold'] = results['iou_threshold']
-    summary['meta']['iou_checkpoints'] = results['iou_checkpoints']
-    summary['meta']['max_interactions_per_frame'] = results['max_interactions']
-    summary['meta']['max_rounds_per_sequence'] = results['max_rounds']
-
-    summary['meta']['total_interactions_over_dataset'] = results['total_num_interactions'][0]
-    all_interactions = results['all_interactions']
-    all_interactions_per_instance = results['all_interactions_per_instance']
-
-    summary['meta']['total_rounds_over_dataset'] = results['total_num_rounds'][0]
-    all_rounds = results['all_rounds']
-    all_interactions_per_round = results['all_interactions_per_round']
+    with open(val_set, 'r') as f:
+        seqs = [line.rstrip('\n') for line in f.readlines()]
+    all_images = {}
     
-    all_instance_level_iou = results['all_instance_level_iou']
-    all_j_and_f = results['all_j_and_f']
-    all_jaccard = results['all_jaccard']
-    all_contour = results['all_contour']
-    all_ious = results['all_ious']
+    image_path = os.path.join(_root,_DATASET_PATH[dataset_name]["images"] )
+    transform = transforms.Compose([transforms.ToTensor()])
+    for s in seqs:
+        seq_images = []
+        seq_path = os.path.join(image_path, s)
+        for file in os.listdir(seq_path):
+            if file.endswith('.jpg') or file.endswith('.png'):
+                im = Image.open(os.path.join(seq_path, file))
+                im = transform(im)
+                seq_images.append(im)
+        seq_images = torch.stack(seq_images)
+        all_images[s] = seq_images
+    return all_images
 
-    
-    avg_iou_over_dataset = []
-    avg_jandf_over_dataset = []
-    total_failed_instances = []
-    total_failed_frames = []
-    total_failed_sequences = 0
-
-    total_frames_over_dataset = []
-    total_frames_interacted = []
-    total_instances_over_dataset = []
-    total_instances_interacted = []
-    total_background_clicks = 0
-    total_foreground_clicks = 0
-    
-    round_results = []
-
-    seqs = list(all_ious.keys())
-    for seq in seqs:
-        summary[seq] = {}
-        ious = all_ious[seq]
-
-        # metrics
-        summary[seq]['max_IoU'] = max(ious)
-        summary[seq]['min_IoU'] = min(ious)
-        summary[seq]['avg_IoU'] = sum(ious)/len(ious)
-
-        summary[seq]['max_J'] = max(all_jaccard[seq])
-        summary[seq]['min_J'] = min(all_jaccard[seq])
-        summary[seq]['avg_J'] = sum(all_jaccard[seq])/len(all_jaccard[seq])
-
-        summary[seq]['max_F'] = max(all_contour[seq])
-        summary[seq]['min_F'] = min(all_contour[seq])
-        summary[seq]['avg_F'] = sum(all_contour[seq])/len(all_contour[seq])
-
-        summary[seq]['avg_J_AND_F'] = sum(all_j_and_f[seq])/len(all_j_and_f[seq])
-        
-        avg_iou_over_dataset.append(summary[seq]['avg_IoU'])
-        avg_jandf_over_dataset.append(summary[seq]['avg_J_AND_F'])
-        
-        # failed sequences, frames, instances
-        total_failed_frames.append(sum(1 for i in ious if i < results['iou_threshold']))
-        if summary[seq]['avg_IoU'] < results['iou_threshold']:
-            total_failed_sequences +=1
-        
-        instance_level_iou = all_instance_level_iou[seq]
-        failed_instances = 0
-        for ious in instance_level_iou:
-            if len(ious) !=0:
-                for iou in ious:
-                    if iou < results['iou_threshold']:
-                        failed_instances += 1
-        total_failed_instances.append(failed_instances)
-
-        interactions = all_interactions[seq]    
-
-        summary[seq]['total_frames'] = len(interactions)
-        total_frames_over_dataset.append(summary[seq]['total_frames'])
-        summary[seq]['frames_interacted'] = np.count_nonzero(np.array(interactions))
-        total_frames_interacted.append(summary[seq]['frames_interacted'])
-        summary[seq]['total_interactions'] = sum(interactions)
-        summary[seq]['num_of_rounds'] = all_rounds[seq]
-
-        object_clicks = defaultdict(lambda:0)
-        for clicks in all_interactions_per_instance[seq]:
-            if len(clicks) !=0:
-                for c in range(len(clicks)):      # last click for bg
-                    if c==len(clicks)-1:  # bg click
-                        total_background_clicks += clicks[c]
-                    else:
-                        total_foreground_clicks += clicks[c]
-                        object_clicks[c] += clicks[c]
-        summary[seq]['instance_wise_interactions'] = list(object_clicks.items())
-        total_instances_over_dataset.append(len(list(object_clicks.keys())))
-        total_instances_interacted.append(np.count_nonzero(np.array(list(object_clicks.values()))))
-        
-        for item in all_interactions_per_round[seq]:
-            round_results.append([seq] + item)
-
-    df = pd.DataFrame(round_results, columns=['sequence', 'round', 'dynamite_loop', 'frame_idx', 'object_idx', 'num_interactions', 'frame_avg_iou', 'seq_avg_iou', 'seq_avg_j_and_f' ])
-
-    summary['meta']['total_foreground_interactions_over_dataset'] = total_foreground_clicks
-    summary['meta']['total_background_interactions_over_dataset'] = total_background_clicks
-    
-    summary['meta']['avg_iou_over_dataset'] = sum(avg_iou_over_dataset)/len(avg_iou_over_dataset)
-    summary['meta']['avg_jandf_over_dataset'] = sum(avg_jandf_over_dataset)/len(avg_jandf_over_dataset)
-    
-    summary['meta']['total_frames_over_dataset'] = sum(total_frames_over_dataset)
-    summary['meta']['total_frames_interacted'] = sum(total_frames_interacted)
-    
-    summary['meta']['total_instances_over_dataset'] = sum(total_instances_over_dataset)
-    summary['meta']['total_instances_interacted'] = sum(total_instances_interacted)
-    
-    summary['meta']['total_failed_sequences'] = total_failed_sequences
-    summary['meta']['total_failed_frames'] = sum(total_failed_frames)    
-    summary['meta']['total_failed_instances'] = sum(total_failed_instances)
-
-    return summary,df
-
-def summarize_round_results(df, iou_threshold):
-    table = []
-    sequences = set(df['sequence'])
-    for seq in sequences:
-        entry = [seq]
-        df_seq = df[df['sequence']==seq].reset_index(drop=True)
-        # num interactions
-        num_instances = len(df_seq['object_idx'][0])
-        entry.append(num_instances)
-        num_interactions = list(df_seq['num_interactions'])[-1]
-        entry.append(num_interactions)  
-        num_rounds = list(df_seq['round'])[-1]
-        entry.append(num_rounds)
-        # IoU checkpoints
-        entry.append(iou_threshold)
-        checkpoints = [0.85, 0.90, 0.95, 0.99]
-        frame_avg_iou = list(map(float,list(df_seq['frame_avg_iou'])[:-1]))
-        max_iou = max(frame_avg_iou)
-        max_idx = df_seq['num_interactions'][frame_avg_iou.index(max_iou)]
-        for idx, iou in enumerate(frame_avg_iou):
-            while float(iou)>=checkpoints[0]:
-                t = checkpoints.pop(0)
-                entry.append(df_seq['num_interactions'][idx])
-        for c in checkpoints:
-            entry.append(0)
-        entry.append(float(frame_avg_iou[-1]))     # IoU after last interaction
-        entry.append([max_iou, max_idx])           # max IoU reached
-        entry.append(float(list(df_seq['seq_avg_iou'])[-1]))
-        entry.append(float(list(df_seq['seq_avg_j_and_f'])[-1]))
-        table.append(entry)
-    
-    table_df = pd.DataFrame(table, columns=['sequence', 'num_instances', 'num_interactions',  'num_rounds', 'iou_threshold', 'iou_0.85', 'iou_0.90', 'iou_0.95', 'iou_0.99', 'iou_end', '[max_iou, idx]', 'seq_avg_iou', 'seq_avg_jandf'])
-    final_entry = ['TOTAL']
-    final_entry.append(table_df['num_instances'].sum())
-    final_entry.append(table_df['num_interactions'].sum())
-    final_entry.append(table_df['num_rounds'].sum())
-    final_entry.append(iou_threshold)
-    final_entry.append(np.count_nonzero(table_df['iou_0.85']))
-    final_entry.append(np.count_nonzero(table_df['iou_0.90']))
-    final_entry.append(np.count_nonzero(table_df['iou_0.95']))
-    final_entry.append(np.count_nonzero(table_df['iou_0.99']))
-    final_entry.append(table_df['iou_end'].mean())
-    final_entry.append('-')
-    final_entry.append(table_df['seq_avg_iou'].mean())
-    final_entry.append(table_df['seq_avg_jandf'].mean())
-    table_df.loc[len(table_df)] = final_entry
-    return table_df
+def load_gt_masks(dataset_name):
+    val_set = os.path.join(_root,_DATASET_PATH[dataset_name]["sets"])
+    with open(val_set, 'r') as f:
+        seqs = [line.rstrip('\n') for line in f.readlines()]
+    all_gt_masks = {}
+    mask_path = os.path.join(_root,_DATASET_PATH[dataset_name]["annotations"])
+    for s in seqs:
+        seq_images = []
+        seq_path = os.path.join(mask_path, s)
+        for file in os.listdir(seq_path):
+            if file.endswith('.jpg') or file.endswith('.png'):
+                im = np.asarray(Image.open(os.path.join(seq_path, file)))
+                seq_images.append(im)
+        seq_images = np.asarray(seq_images)
+        all_gt_masks[s] = seq_images
+    return all_gt_masks
 
 def setup(args):
     """

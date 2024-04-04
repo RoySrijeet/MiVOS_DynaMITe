@@ -45,7 +45,7 @@ class NestedTensor(object):
         self.mask = mask
 
     def to(self, device):
-        # type: (Device) -> NestedTensor # noqa
+        # type: (device) -> NestedTensor # noqa
         cast_tensor = self.tensors.to(device)
         mask = self.mask
         if mask is not None:
@@ -166,9 +166,9 @@ def default_argument_parser(epilog=None):
     parser.add_argument("--first-frame-only", action="store_true", help="perform refinement only on first frame")
     parser.add_argument("--eval-datasets", type=tuple_type, default="GrabCut", help="perform evaluation on given datsets")
     parser.add_argument("--eval-strategy", type=str, default="random", help="evaluation strategy")
-    parser.add_argument("--iou-threshold",type=float, default=0.85,help="IoU threshold")
-    parser.add_argument("--max-interactions",type=int, default=10,help="max interactions")
-    parser.add_argument("--max-rounds",type=int, default=0,help="max rounds per sequence")
+    parser.add_argument("--iou-threshold",nargs='+',type=float, default=0.85,help="IoU threshold")
+    parser.add_argument("--max-interactions",nargs='+',type=int, default=10,help="max interactions")
+    parser.add_argument("--max-rounds",type=int, default=1,help="max rounds per sequence")
     parser.add_argument("--seed-id", type=int, default=0, help="seed id for random evaluation")
     parser.add_argument("--vis-path", default=None, help="path to save visualization")
     parser.add_argument("--num-gpus", type=int, default=1, help="number of gpus *per machine*")
