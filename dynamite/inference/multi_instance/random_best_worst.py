@@ -89,7 +89,7 @@ def evaluate(
             
             instance_level_iou = [[]] * num_frames
             
-            # start
+            #### ROUND LOOP ####
             while lowest_frame_index!=-1:
                 round_num += 1      # round start
                 loop = 0
@@ -111,10 +111,10 @@ def evaluate(
                 
 
                 #check for missing objects
-                object_ids = set(np.unique(all_gt_masks[seq][lowest_frame_index]))                  # objects present in the frame                
+                object_ids = set(np.unique(all_gt_masks[seq][lowest_frame_index]))                  # objects present in the frame
                 num_instances = clicker.num_instances
                 missing_obj_ids = None
-                if num_instances!=seq_num_instances:                    
+                if num_instances!=seq_num_instances:
                     missing_obj_ids = seq_object_ids - object_ids
                 
                 # if available, pred_masks from prev round is set to Clicker
@@ -144,8 +144,12 @@ def evaluate(
                 if not repeat:
                     total_num_interactions+=(num_instances)                                                       # counter over all dataset
                     num_interactions_for_sequence[lowest_frame_index] += num_instances              
-                    num_interactions_per_instance_for_sequence[lowest_frame_index] = [1]*(num_instances+1)      
+                    num_interactions_per_instance_for_sequence[lowest_frame_index] = [1]*(seq_num_instances+1)      
                     num_interactions_per_instance_for_sequence[lowest_frame_index][-1] = 0                        # no interaction for bg yet, so reset                    
+                    # no interaction for missing objects, so reset
+                    if missing_obj_ids:
+                        for i in missing_obj_ids:
+                            num_interactions_per_instance_for_sequence[lowest_frame_index][i-1] = 0                        
                     
                     # round,loop,frame_idx,obj_idx,#interactions,frame_iou,seq_iou,seq_jf
                     all_interactions_per_round[seq].append([round_num, loop, 
@@ -160,7 +164,7 @@ def evaluate(
                 point_sampled = True
                 random_indexes = list(range(len(ious)))
 
-                #interative refinement loop                 
+                #### INTERACTIVE REFINEMENT LOOP #### 
                 while (num_interactions_for_sequence[lowest_frame_index]<max_iters_for_image):               # 1st stopping criterion - if interaction budget is over
                     
                     while all(iou >= iou_checkpoints[0] for iou in ious):                                    # IoU checkpoints
@@ -189,7 +193,7 @@ def evaluate(
                     for i in indexes:                        
                         if ious[i]<iou_threshold:                                                                
                             obj_index = clicker.get_next_click(refine_obj_index=i, time_step=num_interactions_for_sequence[lowest_frame_index])
-                            num_interactions_per_instance_for_sequence[lowest_frame_index][i]+=1                                      
+                            num_interactions_per_instance_for_sequence[lowest_frame_index][obj_index]+=1                                      
                             point_sampled = True
                             break
                     if point_sampled:
@@ -209,6 +213,7 @@ def evaluate(
                 clicker_dict[lowest_frame_index] = clicker
                 predictor_dict[lowest_frame_index] = predictor
 
+                #### MiVOS ####
                 # account for missing objects
                 if pred_masks.shape[0] != seq_num_instances:
                     dummy = np.zeros((seq_num_instances, pred_masks.shape[1], pred_masks.shape[2]))
