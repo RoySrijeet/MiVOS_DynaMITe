@@ -1,6 +1,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 import os
 import logging
+import cv2
 logging.basicConfig(level=logging.INFO)
 from contextlib import ExitStack, contextmanager
 import copy
@@ -19,7 +20,8 @@ def evaluate(
     model, propagation_model, fusion_model,
     dataloader_dict, all_images, all_gt_masks,
     iou_threshold = 0.85, max_interactions = 10, sampling_strategy=1,
-    eval_strategy = "worst", seed_id = 0, vis_path = None, max_rounds=0,dataset_name="davis_2017_val"
+    eval_strategy = "worst", seed_id = 0, vis_path = None, max_rounds=0,dataset_name="davis_2017_val",
+    save_masks=False
 ):
 
     # args
@@ -60,6 +62,8 @@ def evaluate(
         print(f'[EVALUATOR INFO] Sequence-wise evaluation...')
         for seq in list(dataloader_dict.keys()):
             print(f'\n[SEQUENCE INFO] Sequence: {seq}')
+            if vis_path:
+                vis_path_seq = os.path.join(vis_path, seq)
             
             # Initialize propagation module - once per-sequence
             seq_object_ids = set(np.unique(all_gt_masks[seq][0]))       # object ids in the sequence
@@ -89,6 +93,8 @@ def evaluate(
             while lowest_frame_index!=-1:
                 round_num += 1      # round start
                 loop = 0
+                if vis_path:
+                    vis_path_round = os.path.join(vis_path_seq, str(round_num))
 
                 print(f'[DynaMITe INFO][SEQ:{seq}][ROUND:{round_num}] DynaMITe refining frame {lowest_frame_index}...')
                 idx, inputs = dataloader_dict[seq][lowest_frame_index]                              # load frame with lowest IoU
@@ -98,8 +104,6 @@ def evaluate(
                     clicker = Clicker(inputs, sampling_strategy)
                     predictor = Predictor(model)
                     repeat = False
-                    print(f'clicker ground truth:{type(clicker.gt_masks)}, {clicker.gt_masks.shape}')
-                    #torch.save(clicker.gt_masks, os.path.join(vis_path,f"clicker_gt_mask_{seq}_{round_num}.pt"))
                 else:                                                  
                     clicker = clicker_dict[lowest_frame_index]
                     predictor = predictor_dict[lowest_frame_index]
@@ -133,7 +137,7 @@ def evaluate(
                 instance_level_iou[lowest_frame_index] = [iou.tolist() for iou in ious]
                 frame_avg_iou = sum(ious)/len(ious)                                                        
                 if vis_path:
-                    clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_tensor=pred_masks)
+                    clicker.save_visualization(vis_path_round, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_masks=save_masks)
                 
                 
                 # record the interaction, if the frame has never been interacted with
@@ -167,8 +171,7 @@ def evaluate(
                         print(f'[DynaMITe INFO][SEQ:{seq}][ROUND:{round_num}] Frame {lowest_frame_index} meets IoU Threshold {iou_threshold} after {num_interactions_for_sequence[lowest_frame_index]} interactions!')
                         break
                     
-                    loop += 1
-                    #print(f'[DynaMITe INFO] Round {round_num}, Loop {loop}')                    
+                    loop += 1                
                     
                     # According to eval strategy, select which instance to interact with
                     if eval_strategy == "worst":
@@ -195,9 +198,8 @@ def evaluate(
                         pred_masks = predictor.get_prediction(clicker)
                         clicker.set_pred_masks(pred_masks)
                         ious = clicker.compute_iou()
-                        #print(f'[DynaMITe REFINEMENT][SEQ:{seq}][ROUND:{round_num}][LOOP: {loop}] Frame {lowest_frame_index} Instance IoUs: {ious}')
                         if vis_path:
-                            clicker.save_visualization(vis_path, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_tensor=pred_masks)
+                            clicker.save_visualization(vis_path_round, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_masks=save_masks)
                         
                         frame_avg_iou = sum(ious)/len(ious)
                         instance_level_iou[lowest_frame_index] = [iou.tolist() for iou in ious]
@@ -206,9 +208,6 @@ def evaluate(
                 # store clicker and predictor, in case this frame needs to be interacted with again
                 clicker_dict[lowest_frame_index] = clicker
                 predictor_dict[lowest_frame_index] = predictor
-
-                print(f'dynamite raw prediction: {type(pred_masks)}, {pred_masks.shape}')
-                #torch.save(pred_masks, os.path.join(vis_path,f"dynamite_raw_prediction_{seq}_{round_num}.pt"))
 
                 # account for missing objects
                 if pred_masks.shape[0] != seq_num_instances:
@@ -220,8 +219,6 @@ def evaluate(
                         dummy[i][np.where(pred_masks[j]==1)] = 1
                         j +=1
                     pred_masks = torch.from_numpy(dummy)                
-                    print(f'adding missing objects: {type(pred_masks)}, {pred_masks.shape}')
-                    #torch.save(pred_masks, os.path.join(vis_path,f"dynamite_output_with_missing_objects_{seq}_{round_num}.pt"))
 
                 # compute background mask                                                                                   # MiVOS propagation expects (num_instances+1, 1, H, W)
                 bg_mask = np.ones(pred_masks.shape[-2:])                
@@ -230,15 +227,10 @@ def evaluate(
                 bg_mask = torch.from_numpy(bg_mask).unsqueeze(0)                                                            # H,W -> 1,H,W
                 pred_masks = torch.cat((bg_mask,pred_masks),dim=0)                                                          # [bg, inst1, inst2, ..]
                 pred_masks = pred_masks.unsqueeze(1).float()                                                                # num_inst+1, H, W -> num_inst+1,1, H, W
-                print(f'adding background: {type(pred_masks)}, {pred_masks.shape}')
-                #torch.save(pred_masks, os.path.join(vis_path,f"dynamite_output_with_bg_{seq}_{round_num}.pt"))
                 
                 # Propagate
                 print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Temporal propagation in progress...')
                 out_masks = processor.interact(pred_masks,lowest_frame_index)
-
-                print(f'propagation output: {type(out_masks)}, {out_masks.shape}')
-                np.save(os.path.join(vis_path, f"propagation_output_{seq}_{round_num}.npy"), out_masks)
 
                 # metrics (mean: over instances in a frame)
                 jaccard_mean, jaccard_instances = batched_jaccard(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
@@ -252,6 +244,9 @@ def evaluate(
                 seq_avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)
                 print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {seq_avg_iou}, Average J&F: {seq_avg_jf}')
                 
+                if save_masks:
+                    np.save(os.path.join(vis_path_round, f"propagation_J&F_{round(seq_avg_jf,2)}_Round_{round_num}.npy"), out_masks)
+
                 all_interactions_per_round[seq].append([round_num, '-', '-', '-', sum(num_interactions_for_sequence), '-', seq_avg_iou, seq_avg_jf])
                 
                 # Check stopping criteria

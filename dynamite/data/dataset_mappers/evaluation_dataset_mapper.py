@@ -1,7 +1,8 @@
 # Modified by Amit Rana from https://github.com/facebookresearch/detr/blob/master/d2/detr/dataset_mapper.py
 import copy
 import logging
-
+import os
+from PIL import Image
 import numpy as np
 import torch
 import torchvision
@@ -93,7 +94,7 @@ class EvaluationDatasetMapper:
         # reads the file as a PIL.Image, then converts it to a np.ndarray
         # supported types: modes supported in PIL, or "BGR" or "YUV-BT.601"
         image = utils.read_image(dataset_dict["file_name"], format=self.img_format)
-        dataset_dict["image_orig"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2,0,1)))    
+        #dataset_dict["image_orig"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2,0,1)))    
 
         # check image resolution (height and width) with specifications mentioned in dataset_dict,
         # if dataset_dict is missing 'height' and 'width' entries, populate them with image res
@@ -135,6 +136,15 @@ class EvaluationDatasetMapper:
                 for obj in dataset_dict.pop("annotations")          # check if an object is labeled as COCO's 'crowd region'
                 if obj.get("iscrowd", 0) == 0                       # if not, update annotation properties (bbox and seg mask)
             ]
+
+            # for KITTI_MOTS add object IDs
+            # if self.dataset_name == 'kitti_mots_val':
+            #     file_name = '/'.join(dataset_dict["file_name"].split('/')[-2:])
+            #     path_to_instances_root = '/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/datasets/KITTI_MOTS/train/instances'
+            #     path_to_gt_anno = os.path.join(path_to_instances_root,file_name)
+            #     gt_anno = np.array(Image.open(path_to_gt_anno))                
+            #     annos = add_object_ids(gt_anno, annos)
+                
             # USER: Implement additional transformations if you have other types of data
             # annos = [
             #     utils.transform_instance_annotations(obj, transforms, image_shape)
@@ -256,3 +266,43 @@ def original_res_annotations(
             annotation["segmentation"] = mask
 
     return annotation
+
+###########################################
+# For KITTI_MOTS, add object IDs
+# from scipy import ndimage
+
+# def compute_iou(mask1, mask2):
+#     intersection = np.logical_and(mask1, mask2).sum()
+#     if intersection == 0:
+#         return 0
+#     union = np.logical_or(mask1, mask2).sum()
+#     return (intersection/union)
+
+# def add_object_ids(gt_anno, coco_annotations):
+#     # gt_anno
+#     instances = np.unique(gt_anno).tolist()
+#     if 0 in instances:
+#         instances.remove(0)
+#     if 10000 in instances:
+#         instances.remove(10000)
+#     inst_mask = {}
+#     for inst in instances:
+#         _mask = np.zeros_like(gt_anno)
+#         _mask[np.where(gt_anno==inst)] = 1
+#         inst_mask[inst] = _mask
+#     # coco anno
+#     for ann in coco_annotations:
+#         if not ann['iscrowd']:    
+#             # coco seg
+#             seg = ann['segmentation'][0]
+#             x = np.array(seg[::2]).astype(int)
+#             y = np.array(seg[1::2]).astype(int)
+#             _mask = np.zeros_like(gt_anno)
+#             _mask[y,x]=1
+#             _mask = ndimage.binary_fill_holes(_mask).astype(int)
+#             ious = {}
+#             for inst in list(inst_mask.keys()):
+#                 ious[inst] = compute_iou(inst_mask[inst], _mask)
+#             ann['object_id'] = max(ious, key=ious.get)
+
+#     return coco_annotations

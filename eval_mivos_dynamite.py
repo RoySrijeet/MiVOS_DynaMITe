@@ -92,6 +92,7 @@ class Trainer(DefaultTrainer):
             iou_threshold = args.iou_threshold
             max_interactions = args.max_interactions
             max_rounds = args.max_rounds
+            save_masks = args.save_masks
         
         if not isinstance(iou_threshold, list):                
             iou_threshold = [iou_threshold]
@@ -129,9 +130,9 @@ class Trainer(DefaultTrainer):
                     curr_seq_name = inputs[0]["file_name"].split('/')[-2]
                     dataloader_dict[curr_seq_name].append([idx, inputs])
                                                 
-                for iou, interactions in list(itertools.product(iou_threshold, max_interactions)):
-                    #save_path = os.path.join(vis_path, f'{interactions}_interactions/iou_{int(iou*100)}')
-                    save_path = vis_path
+                for interactions, iou in list(itertools.product(max_interactions,iou_threshold)):
+                    save_path = os.path.join(vis_path, f'{interactions}_interactions/iou_{int(iou*100)}')
+                    #save_path = vis_path
                     os.makedirs(save_path, exist_ok=True) 
 
                     print(f'[INFO] Starting evaluation...')
@@ -145,7 +146,8 @@ class Trainer(DefaultTrainer):
                                         seed_id=seed_id,
                                         vis_path=save_path_vis, 
                                         max_rounds=max_rounds, 
-                                        dataset_name=dataset_name)
+                                        dataset_name=dataset_name,
+                                        save_masks=save_masks)
                     
                     print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
 
@@ -155,10 +157,10 @@ class Trainer(DefaultTrainer):
                     
                     summary, df = summarize_results(results_i)
                     df.to_csv(os.path.join(save_path, f'round_results_{interactions}_interactions_iou_{int(iou*100)}.csv'))
-                    summary_df = summarize_round_results(df, iou_threshold)
                     with open(os.path.join(save_path,f'summary_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
                         json.dump(summary, f)
                     
+                    summary_df = summarize_round_results(df, iou_threshold)
                     summary_df.to_csv(os.path.join(save_path, f'round_summary_{interactions}_interactions_iou_{int(iou*100)}.csv'))
                 
 def load_images(dataset_name="davis_2017_val"):

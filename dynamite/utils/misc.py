@@ -45,7 +45,6 @@ class NestedTensor(object):
         self.mask = mask
 
     def to(self, device):
-        # type: (device) -> NestedTensor # noqa
         cast_tensor = self.tensors.to(device)
         mask = self.mask
         if mask is not None:
@@ -171,6 +170,7 @@ def default_argument_parser(epilog=None):
     parser.add_argument("--max-rounds",type=int, default=1,help="max rounds per sequence")
     parser.add_argument("--seed-id", type=int, default=0, help="seed id for random evaluation")
     parser.add_argument("--vis-path", default=None, help="path to save visualization")
+    parser.add_argument("--save-masks", action="store_true", help="save predicted masks as pngs")
     parser.add_argument("--num-gpus", type=int, default=1, help="number of gpus *per machine*")
     parser.add_argument("--num-machines", type=int, default=1, help="total number of machines")
     parser.add_argument(

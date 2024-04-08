@@ -286,7 +286,7 @@ class Clicker:
             self.pred_masks = self.pred_masks[index][None,:,:] 
             return [ious[index]]
 
-    def save_visualization(self, save_results_path, ious=None, num_interactions=None, alpha_blend =0.6, click_radius=5, round_num=0, save_tensor=None):
+    def save_visualization(self, save_results_path, ious=None, num_interactions=None, alpha_blend =0.6, click_radius=5, round_num=0, save_masks=False):
         
         if num_interactions==0:     # no interactions on the image yet - gt mask
             result_masks_for_vis = self.gt_masks
@@ -325,17 +325,26 @@ class Clicker:
                 color = (int (color[0]), int (color[1]), int (color[2]))
                 image = cv2.circle(image, (int(coords[1]), int(coords[0])), click_radius, tuple(color), -1)
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        save_dir = os.path.join(save_results_path, str(self.inputs[0]['image_id']))
+        
+        # save interactions
+        #save_dir = os.path.join(save_results_path, 'interactions', str(self.inputs[0]['image_id']))
+        save_dir = os.path.join(save_results_path, 'interactions')
         os.makedirs(save_dir, exist_ok=True)
         if isinstance(ious, list):
             iou_val = np.round(sum(ious)/len(ious),4)*100
         else:
             iou_val = ious
-        cv2.imwrite(os.path.join(save_dir, f"tau_{num_interactions}_{iou_val}_{round_num}.jpg"), image)
-        if save_tensor is not None:
-            mask_path = os.path.join(save_dir, 'mask_tensors')
-            os.makedirs(mask_path, exist_ok=True)
-            torch.save(save_tensor, os.path.join(mask_path,f"tau_{num_interactions}_{iou_val}_{round_num}.pt"))
+        cv2.imwrite(os.path.join(save_dir, f"interactions_{str(self.inputs[0]['image_id'])}_interactions_{num_interactions}_iou_{iou_val}_round_{round_num}.png"), image)
+        
+        # save masks
+        if save_masks:
+            dummy_ = np.zeros((pred_masks.shape[1],pred_masks.shape[2]))
+            for c in range(pred_masks.shape[0]):
+                dummy_ += pred_masks[c] * (c+1)
+            save_dir = os.path.join(save_results_path, 'masks')
+            os.makedirs(save_dir, exist_ok=True)
+            cv2.imwrite(os.path.join(save_dir, f"mask_{str(self.inputs[0]['image_id'])}_interactions_{num_interactions}_iou_{iou_val}_round_{round_num}.png"), dummy_)
+
     
     def apply_mask(self, image, mask, color, alpha=0.5):
         for c in range(3):

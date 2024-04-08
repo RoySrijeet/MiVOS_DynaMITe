@@ -128,17 +128,35 @@ def summarize_round_results(df, iou_threshold):
     for seq in sequences:
         entry = [seq]
         df_seq = df[df['sequence']==seq].reset_index(drop=True)
-        # num interactions
+        
+        # num instances
         num_instances = len(df_seq['object_idx'][0])
         entry.append(num_instances)
+        
+        # num interactions
         num_interactions = list(df_seq['num_interactions'])[-1]
         entry.append(num_interactions)  
+        
+        # num rounds
         num_rounds = list(df_seq['round'])[-1]
         entry.append(num_rounds)
+
         # IoU checkpoints
         entry.append(iou_threshold)
         checkpoints = [0.85, 0.90, 0.95, 0.99]
-        frame_avg_iou = list(map(float,list(df_seq['frame_avg_iou'])[:-1]))
+
+        # IoU
+        frame_avg_iou = []
+        frame_avg_iou_ = list(df_seq['frame_avg_iou'])
+        first_frame_final_iou = 0
+        for idx,val in enumerate(frame_avg_iou_):
+            if val != '-':
+                frame_avg_iou.append(float(val))
+            else:
+                if df_seq['frame_idx'][idx-1]=='0':
+                    first_frame_final_iou = eval(df_seq['frame_avg_iou'][idx-1])
+
+        
         max_iou = max(frame_avg_iou)
         max_idx = df_seq['num_interactions'][frame_avg_iou.index(max_iou)]
         for idx, iou in enumerate(frame_avg_iou):
@@ -147,13 +165,13 @@ def summarize_round_results(df, iou_threshold):
                 entry.append(df_seq['num_interactions'][idx])
         for c in checkpoints:
             entry.append(0)
-        entry.append(float(frame_avg_iou[-1]))     # IoU after last interaction
-        entry.append([max_iou, max_idx])           # max IoU reached
+        entry.append(first_frame_final_iou)     # IoU of first frame
+        entry.append([round(max_iou,6), max_idx])           # max IoU reached
         entry.append(float(list(df_seq['seq_avg_iou'])[-1]))
         entry.append(float(list(df_seq['seq_avg_j_and_f'])[-1]))
         table.append(entry)
     
-    table_df = pd.DataFrame(table, columns=['sequence', 'num_instances', 'num_interactions',  'num_rounds', 'iou_threshold', 'iou_0.85', 'iou_0.90', 'iou_0.95', 'iou_0.99', 'iou_end', '[max_iou, idx]', 'seq_avg_iou', 'seq_avg_jandf'])
+    table_df = pd.DataFrame(table, columns=['sequence', 'num_instances', 'num_interactions',  'num_rounds', 'iou_threshold', 'iou_0.85', 'iou_0.90', 'iou_0.95', 'iou_0.99', 'first_frame_final_iou', '[max_iou, idx]', 'seq_avg_iou', 'seq_avg_jandf'])
     final_entry = ['TOTAL']
     final_entry.append(table_df['num_instances'].sum())
     final_entry.append(table_df['num_interactions'].sum())
@@ -163,7 +181,7 @@ def summarize_round_results(df, iou_threshold):
     final_entry.append(np.count_nonzero(table_df['iou_0.90']))
     final_entry.append(np.count_nonzero(table_df['iou_0.95']))
     final_entry.append(np.count_nonzero(table_df['iou_0.99']))
-    final_entry.append(table_df['iou_end'].mean())
+    final_entry.append(table_df['first_frame_final_iou'].mean())
     final_entry.append('-')
     final_entry.append(table_df['seq_avg_iou'].mean())
     final_entry.append(table_df['seq_avg_jandf'].mean())
