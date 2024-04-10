@@ -237,50 +237,54 @@ def evaluate(
                 print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Temporal propagation in progress...')
                 out_masks = processor.interact(pred_masks,lowest_frame_index)
 
-                # metrics (mean: over instances in a frame)
-                jaccard_mean, jaccard_instances = batched_jaccard(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
-                contour_mean, contour_instances = batched_f_measure(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
+                if dataset_name in ['mose_val']:
+                    ...
+                else:
+                    # metrics (mean: over instances in a frame)
+                    jaccard_mean, jaccard_instances = batched_jaccard(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
+                    contour_mean, contour_instances = batched_f_measure(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
 
-                j_and_f = 0.5*jaccard_mean + 0.5*contour_mean
-                j_and_f = j_and_f.tolist()
-                seq_avg_jf = sum(j_and_f)/len(j_and_f)
+                    j_and_f = 0.5*jaccard_mean + 0.5*contour_mean
+                    j_and_f = j_and_f.tolist()
+                    seq_avg_jf = sum(j_and_f)/len(j_and_f)
 
-                iou_for_sequence = compute_iou_for_sequence(out_masks, all_gt_masks[seq])
-                seq_avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)
-                print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {seq_avg_iou}, Average J&F: {seq_avg_jf}')
-                
-                if save_masks:
-                    np.save(os.path.join(vis_path_round, f"propagation_J&F_{round(seq_avg_jf,2)}_Round_{round_num}.npy"), out_masks)
+                    #iou_for_sequence = compute_iou_for_sequence(out_masks, all_gt_masks[seq])
+                    iou_for_sequence = jaccard_mean.tolist()
+                    seq_avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)
+                    print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {seq_avg_iou}, Average J&F: {seq_avg_jf}')
+                    
+                    if save_masks:
+                        np.save(os.path.join(vis_path_round, f"propagation_J&F_{round(seq_avg_jf,2)}_Round_{round_num}.npy"), out_masks)
 
-                all_interactions_per_round[seq].append([round_num, '-', '-', '-', sum(num_interactions_for_sequence), '-', seq_avg_iou, seq_avg_jf])
-                
-                # Check stopping criteria
-                iou_copy = copy.deepcopy(iou_for_sequence)
-                while True:
-                    min_iou = min(iou_copy)
-                    if min_iou < iou_threshold:         # 1. whether all frames meet IoU threshold
-                        if round_num == max_rounds:     # 2. whether round budget is over
-                            print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] Maximum round limit ({max_rounds}) reached!')
-                            print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
-                            lowest_frame_index = -1
-                            break
-                        lowest_frame_index = iou_copy.index(min_iou)
-                        print(f'[EVALUATOR INFO][SEQ:{seq}][ROUND:{round_num}] Next index to refine: {lowest_frame_index}, IoU: {min_iou}')
-                        if num_interactions_for_sequence[lowest_frame_index] >= max_iters_for_image:     # if interaction budget is over for a frame, look for another frame             
-                            print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] Budget over - skipping frame {lowest_frame_index}.')
-                            iou_copy.pop(lowest_frame_index)
-                            if len(iou_copy)==0:                                                         # 3. whether interaction budget is over for all frames
+                    all_interactions_per_round[seq].append([round_num, '-', '-', '-', sum(num_interactions_for_sequence), '-', seq_avg_iou, seq_avg_jf])
+                    
+                    # Check stopping criteria
+                    iou_copy = copy.deepcopy(iou_for_sequence)
+                    while True:
+                        min_iou = min(iou_copy)
+                        if min_iou < iou_threshold:         # 1. whether all frames meet IoU threshold
+                            if round_num == max_rounds:     # 2. whether round budget is over
+                                print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] Maximum round limit ({max_rounds}) reached!')
+                                print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
                                 lowest_frame_index = -1
-                                print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] Ran out of click budget for all frames!')
-                                print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
                                 break
+                            lowest_frame_index = iou_copy.index(min_iou)
+                            print(f'[EVALUATOR INFO][SEQ:{seq}][ROUND:{round_num}] Next index to refine: {lowest_frame_index}, IoU: {min_iou}')
+                            if num_interactions_for_sequence[lowest_frame_index] >= max_iters_for_image:     # if interaction budget is over for a frame, look for another frame             
+                                print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] Budget over - skipping frame {lowest_frame_index}.')
+                                iou_copy.pop(lowest_frame_index)
+                                if len(iou_copy)==0:                                                         # 3. whether interaction budget is over for all frames
+                                    lowest_frame_index = -1
+                                    print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] Ran out of click budget for all frames!')
+                                    print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
+                                    break
+                            else:
+                                break                        
                         else:
-                            break                        
-                    else:
-                        lowest_frame_index = -1
-                        print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
-                        break
-                         
+                            lowest_frame_index = -1
+                            print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
+                            break
+                            
 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()

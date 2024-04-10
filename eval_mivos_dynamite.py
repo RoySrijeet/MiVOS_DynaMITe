@@ -32,7 +32,7 @@ from detectron2.engine import (
 )
 from dynamite.utils.misc import default_argument_parser
 
-from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
+# from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.logger import setup_logger
 
@@ -160,7 +160,7 @@ class Trainer(DefaultTrainer):
                     with open(os.path.join(save_path,f'summary_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
                         json.dump(summary, f)
                     
-                    summary_df = summarize_round_results(df, iou_threshold)
+                    summary_df = summarize_round_results(df, iou)
                     summary_df.to_csv(os.path.join(save_path, f'round_summary_{interactions}_interactions_iou_{int(iou*100)}.csv'))
                 
 def load_images(dataset_name="davis_2017_val"):
@@ -208,7 +208,7 @@ def setup(args):
     print('[INFO] Setting up DynaMITE...')
     cfg = get_cfg()
     # for poly lr schedule
-    add_deeplab_config(cfg)
+    #add_deeplab_config(cfg)
     add_maskformer2_config(cfg)                 
     add_hrnet_config(cfg)
     cfg.merge_from_file(args.config_file)       # path to config file

@@ -153,7 +153,7 @@ def summarize_round_results(df, iou_threshold):
             if val != '-':
                 frame_avg_iou.append(float(val))
             else:
-                if df_seq['frame_idx'][idx-1]=='0':
+                if df_seq['frame_idx'][idx-1]==0:
                     first_frame_final_iou = eval(df_seq['frame_avg_iou'][idx-1])
 
         
@@ -165,7 +165,7 @@ def summarize_round_results(df, iou_threshold):
                 entry.append(df_seq['num_interactions'][idx])
         for c in checkpoints:
             entry.append(0)
-        entry.append(first_frame_final_iou)     # IoU of first frame
+        entry.append(first_frame_final_iou)                 # IoU of first frame
         entry.append([round(max_iou,6), max_idx])           # max IoU reached
         entry.append(float(list(df_seq['seq_avg_iou'])[-1]))
         entry.append(float(list(df_seq['seq_avg_j_and_f'])[-1]))

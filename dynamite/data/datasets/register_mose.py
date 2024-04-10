@@ -27,16 +27,15 @@ _PREDEFINED_SPLITS_MOSE = {
 
 def register_all_mose(root):
     for key, (ann_root, image_root) in _PREDEFINED_SPLITS_MOSE.items():
-        imset = os.listdir(ann_root)
+        imset = [folder for folder in os.listdir(os.path.join(root,ann_root)) if os.path.isdir(os.path.join(root,ann_root,folder))]
         register_mose_instances(
         key,
         _get_mose_instances_meta(),
         os.path.join(root, ann_root),
         os.path.join(root, image_root),
         imset
-       # os.path.join(root, imset)
     )
-    print("MOSE datset registered")
+    print("mose_val dataset registered")
 
 def bbox_from_mask_np(mask, order='Y1Y2X1X2', return_none_if_invalid=False):
   if len(np.where(mask)[0]) == 0:
