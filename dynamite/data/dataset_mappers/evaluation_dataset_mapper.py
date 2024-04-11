@@ -123,7 +123,7 @@ class EvaluationDatasetMapper:
         dataset_dict["padding_mask"] = torch.as_tensor(np.ascontiguousarray(padding_mask))
 
         # annotations - a list of dicts, one for each instance in the image
-        if "annotations" in dataset_dict:
+        if "annotations" in dataset_dict and len(dataset_dict["annotations"])>0:
             # USER: Modify this if you want to keep them for some reason.
             for anno in dataset_dict["annotations"]:        # for each instance, there's a dict
                 # Let's always keep mask
@@ -209,6 +209,14 @@ class EvaluationDatasetMapper:
                 return None
 
             dataset_dict["instances"] = new_instances
+
+        else:
+            dataset_dict['semantic_map'] = None
+            dataset_dict["orig_fg_click_coords"] = None
+            dataset_dict["fg_click_coords"] = None
+            dataset_dict["bg_click_coords"] = None
+            dataset_dict["num_clicks_per_object"] = None
+            dataset_dict["instances"] = None
 
         return dataset_dict
 

@@ -154,7 +154,7 @@ def summarize_round_results(df, iou_threshold):
                 frame_avg_iou.append(float(val))
             else:
                 if df_seq['frame_idx'][idx-1]==0:
-                    first_frame_final_iou = eval(df_seq['frame_avg_iou'][idx-1])
+                    first_frame_final_iou = df_seq['frame_avg_iou'][idx-1]
 
         
         max_iou = max(frame_avg_iou)

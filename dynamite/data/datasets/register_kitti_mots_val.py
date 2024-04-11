@@ -23,7 +23,7 @@ def register_all_kitti_mots(root, split='val'):
    json_dir = os.path.join(root, _PREDEFINED_SPLITS_KITTI_MOTS[split])
    image_dir = os.path.join(root, _PREDEFINED_SPLITS_KITTI_MOTS['image'])
    register_coco_instances(name=f"kitti_mots_{split}", metadata=_get_kitti_mots_meta(), json_file=json_dir, image_root=image_dir)
-   print(f"kitti_mots_{split} dataset registered")
+   #print(f"kitti_mots_{split} dataset registered")
 
 def _get_kitti_mots_meta():
     return {}

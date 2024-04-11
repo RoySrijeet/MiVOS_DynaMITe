@@ -35,7 +35,7 @@ def register_all_mose(root):
         os.path.join(root, image_root),
         imset
     )
-    print("mose_val dataset registered")
+    #print("mose_val dataset registered")
 
 def bbox_from_mask_np(mask, order='Y1Y2X1X2', return_none_if_invalid=False):
   if len(np.where(mask)[0]) == 0:

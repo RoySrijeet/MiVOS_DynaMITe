@@ -171,6 +171,7 @@ def default_argument_parser(epilog=None):
     parser.add_argument("--seed-id", type=int, default=0, help="seed id for random evaluation")
     parser.add_argument("--vis-path", default=None, help="path to save visualization")
     parser.add_argument("--save-masks", action="store_true", help="save predicted masks as pngs")
+    parser.add_argument("--debug", action="store_true", help="run in debug mode")
     parser.add_argument("--num-gpus", type=int, default=1, help="number of gpus *per machine*")
     parser.add_argument("--num-machines", type=int, default=1, help="total number of machines")
     parser.add_argument(
