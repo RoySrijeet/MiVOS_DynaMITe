@@ -12,6 +12,7 @@ datasets/
 
 # Jobscripts
 mivos_dynamite_eval.sh
+mivos_dynamite_eval_2.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

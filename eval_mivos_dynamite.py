@@ -194,7 +194,8 @@ def load_images(dataset_name="davis_2017_val", debug_mode=False):
     for s in seqs:
         seq_images = []
         seq_path = os.path.join(image_path, s)
-        for file in os.listdir(seq_path):
+        imagefiles = sorted([f for f in os.listdir(seq_path)])
+        for file in imagefiles:
             if file.endswith('.jpg') or file.endswith('.png'):
                 im = Image.open(os.path.join(seq_path, file))
                 im = transform(im)
@@ -217,7 +218,8 @@ def load_gt_masks(dataset_name="davis_2017_val", debug_mode=False):
     for s in seqs:
         seq_images = []
         seq_path = os.path.join(mask_path, s)
-        for file in os.listdir(seq_path):
+        maskfiles = sorted([f for f in os.listdir(seq_path)])
+        for file in maskfiles:
             if file.endswith('.jpg') or file.endswith('.png'):
                 im = np.asarray(Image.open(os.path.join(seq_path, file)))
                 seq_images.append(im)
