@@ -10,11 +10,10 @@ except:
 
 import os
 import itertools
-import pandas as pd
 from PIL import Image
 from torchvision import transforms
 from collections import defaultdict
-import itertools
+import json
 import logging
 
 import torch
@@ -111,7 +110,8 @@ class Trainer(DefaultTrainer):
                 
                 if eval_strategy in ["random", "best", "worst"]:
                     if dataset_name != "mose_val":
-                        from dynamite.inference.multi_instance.random_best_worst import evaluate
+                        #from dynamite.inference.multi_instance.random_best_worst import evaluate
+                        from dynamite.inference.multi_instance.random_best_worst_mono import evaluate
                     else:
                         from dynamite.inference.multi_instance.random_best_worst_mose import evaluate
                 elif eval_strategy == "max_dt":
@@ -142,7 +142,7 @@ class Trainer(DefaultTrainer):
                 for idx, inputs in enumerate(data_loader):                     
                     curr_seq_name = inputs[0]["file_name"].split('/')[-2]
                     if debug and curr_seq_name != list(all_images.keys())[0]:
-                        continue
+                        break
                     dataloader_dict[curr_seq_name].append([idx, inputs])
                 del data_loader
                                                 
@@ -166,8 +166,7 @@ class Trainer(DefaultTrainer):
                                         save_masks=save_masks)
                     
                     print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
-
-                    import json
+                
                     with open(os.path.join(save_path,f'results_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
                         json.dump(results_i, f)
                     
@@ -267,12 +266,12 @@ def main(args):
         )
         print('[INFO] Model loaded!')
 
-        prop_model_weights = torch.load('/globalwork/roy/dynamite_video/mivos/MiVOS/saves/propagation_model.pth')
+        prop_model_weights = torch.load('/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/saves/propagation_model.pth')
         prop_model = PropagationNetwork().cuda().eval()
         prop_model.load_state_dict(prop_model_weights)
         print(f'[INFO] Propagation module loaded!')
 
-        fusion_model_weights = torch.load('/globalwork/roy/dynamite_video/mivos/MiVOS/saves/fusion.pth')
+        fusion_model_weights = torch.load('/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/saves/fusion.pth')
         fusion_model = FusionNet().cuda().eval()
         fusion_model.load_state_dict(fusion_model_weights)
         print(f'[INFO] Fusion module loaded!')

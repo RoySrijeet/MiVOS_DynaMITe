@@ -146,3 +146,5 @@ dmypy.json
 
 datasets
 !dynamite/data/datasets/
+dynamite/inference/multi_instance/random_best_worst_duo.py
+dynamite/inference/multi_instance/random_best_worst_mono.py

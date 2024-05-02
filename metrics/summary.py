@@ -12,7 +12,6 @@ def summarize_results(results):
 
     summary['meta']['total_interactions_over_dataset'] = results['total_num_interactions'][0]
     all_interactions = results['all_interactions']
-    all_interactions_per_instance = results['all_interactions_per_instance']
 
     summary['meta']['total_rounds_over_dataset'] = results['total_num_rounds'][0]
     all_rounds = results['all_rounds']
@@ -35,8 +34,6 @@ def summarize_results(results):
     total_frames_interacted = []
     total_instances_over_dataset = []
     total_instances_interacted = []
-    total_background_clicks = 0
-    total_foreground_clicks = 0
     
     round_results = []
 
@@ -85,27 +82,11 @@ def summarize_results(results):
         total_frames_interacted.append(summary[seq]['frames_interacted'])
         summary[seq]['total_interactions'] = sum(interactions)
         summary[seq]['num_of_rounds'] = all_rounds[seq]
-
-        object_clicks = defaultdict(lambda:0)
-        for clicks in all_interactions_per_instance[seq]:
-            if len(clicks) !=0:
-                for c in range(len(clicks)):      # last click for bg
-                    if c==len(clicks)-1:  # bg click
-                        total_background_clicks += clicks[c]
-                    else:
-                        total_foreground_clicks += clicks[c]
-                        object_clicks[c] += clicks[c]
-        summary[seq]['instance_wise_interactions'] = list(object_clicks.items())
-        total_instances_over_dataset.append(len(list(object_clicks.keys())))
-        total_instances_interacted.append(np.count_nonzero(np.array(list(object_clicks.values()))))
         
         for item in all_interactions_per_round[seq]:
             round_results.append([seq] + item)
 
     df = pd.DataFrame(round_results, columns=['sequence', 'round', 'dynamite_loop', 'frame_idx', 'object_idx', 'num_interactions', 'frame_avg_iou', 'seq_avg_iou', 'seq_avg_j_and_f' ])
-
-    summary['meta']['total_foreground_interactions_over_dataset'] = total_foreground_clicks
-    summary['meta']['total_background_interactions_over_dataset'] = total_background_clicks
     
     summary['meta']['avg_iou_over_dataset'] = sum(avg_iou_over_dataset)/len(avg_iou_over_dataset)
     summary['meta']['avg_jandf_over_dataset'] = sum(avg_jandf_over_dataset)/len(avg_jandf_over_dataset)

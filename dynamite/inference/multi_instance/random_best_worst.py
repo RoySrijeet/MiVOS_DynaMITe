@@ -79,7 +79,6 @@ def evaluate(
             predictor_dict = {}                                         # records predictors for interacted frames
 
             num_interactions_for_sequence = [0]*num_frames              # records #interactions on each frame of the sequence
-            num_interactions_per_instance_for_sequence = [[]] * num_frames           # records #interactions on each object of each frame of the sequence
             out_masks = None                                            # stores predicted masks by prop module, initially None
             all_interactions_per_round[seq] = []                           # records round-wise interaction details
             all_j_and_f[seq] = [0]                                      # records J&F metric score for the sequence
@@ -143,13 +142,7 @@ def evaluate(
                 # record the interaction, if the frame has never been interacted with
                 if not repeat:
                     total_num_interactions+=(num_instances)                                                       # counter over all dataset
-                    num_interactions_for_sequence[lowest_frame_index] += num_instances              
-                    num_interactions_per_instance_for_sequence[lowest_frame_index] = [1]*(seq_num_instances+1)      
-                    num_interactions_per_instance_for_sequence[lowest_frame_index][-1] = 0                        # no interaction for bg yet, so reset                    
-                    # no interaction for missing objects, so reset
-                    if missing_obj_ids:
-                        for i in missing_obj_ids:
-                            num_interactions_per_instance_for_sequence[lowest_frame_index][i-1] = 0                        
+                    num_interactions_for_sequence[lowest_frame_index] += num_instances                
                     
                     # round,loop,frame_idx,obj_idx,#interactions,frame_iou,seq_iou,seq_jf
                     all_interactions_per_round[seq].append([round_num, loop, 
@@ -192,8 +185,7 @@ def evaluate(
                     point_sampled = False
                     for i in indexes:                        
                         if ious[i]<iou_threshold:                                                                
-                            obj_index = clicker.get_next_click(refine_obj_index=i, time_step=num_interactions_for_sequence[lowest_frame_index])
-                            num_interactions_per_instance_for_sequence[lowest_frame_index][obj_index]+=1                                      
+                            obj_index = clicker.get_next_click(refine_obj_index=i, time_step=num_interactions_for_sequence[lowest_frame_index])                                    
                             point_sampled = True
                             break
                     if point_sampled:
@@ -253,36 +245,37 @@ def evaluate(
                     seq_avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)
                     print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {seq_avg_iou}, Average J&F: {seq_avg_jf}')
                     
-                    if save_masks:
-                        np.save(os.path.join(vis_path_round, f"propagation_J&F_{round(seq_avg_jf,2)}_Round_{round_num}.npy"), out_masks)
+                    # if save_masks:
+                    #     np.save(os.path.join(vis_path_round, f"propagation_J&F_{round(seq_avg_jf,2)}_Round_{round_num}.npy"), out_masks)
 
                     all_interactions_per_round[seq].append([round_num, '-', '-', '-', sum(num_interactions_for_sequence), '-', seq_avg_iou, seq_avg_jf])
                     
                     # Check stopping criteria
-                    iou_copy = copy.deepcopy(iou_for_sequence)
+                    frame_list = [i for i in range(num_frames)]
                     while True:
-                        min_iou = min(iou_copy)
-                        if min_iou < iou_threshold:         # 1. whether all frames meet IoU threshold
-                            if round_num == max_rounds:     # 2. whether round budget is over
+                        min_iou_index = np.unravel_index(np.argmin(jaccard_instances, axis=None), jaccard_instances.shape)
+                        min_iou = jaccard_instances[min_iou_index]
+                        print(f'[EVALUATOR INFO][SEQ:{seq}][ROUND:{round_num}] Weakest frame (instance): idx: {min_iou_index}, value: {min_iou}')                        
+                        if min_iou < iou_threshold:                                                         # 1. whether all frames meet IoU threshold
+                            if round_num == max_rounds:                                                     # 2. whether round budget is over
                                 print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] Maximum round limit ({max_rounds}) reached!')
-                                print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
                                 lowest_frame_index = -1
                                 break
-                            lowest_frame_index = iou_copy.index(min_iou)
+                            lowest_frame_index = int(min_iou_index[0])
                             print(f'[EVALUATOR INFO][SEQ:{seq}][ROUND:{round_num}] Next index to refine: {lowest_frame_index}, IoU: {min_iou}')
                             if num_interactions_for_sequence[lowest_frame_index] >= max_iters_for_image:     # if interaction budget is over for a frame, look for another frame             
                                 print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] Budget over - skipping frame {lowest_frame_index}.')
-                                iou_copy.pop(lowest_frame_index)
-                                if len(iou_copy)==0:                                                         # 3. whether interaction budget is over for all frames
+                                frame_list.remove(lowest_frame_index)
+                                jaccard_instances[min_iou_index[0]] = 99.
+                                if len(frame_list)==0:                                                         # 3. whether interaction budget is over for all frames
                                     lowest_frame_index = -1
-                                    print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] Ran out of click budget for all frames!')
-                                    print(f'[INFO][SEQ:{seq}][ROUND:{round_num}] IoU scores: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
+                                    print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] Ran out of click budget for all frames!')
                                     break
                             else:
                                 break                        
                         else:
                             lowest_frame_index = -1
-                            print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] All frames meet IoU requirement: Max:{max(iou_for_sequence)}, Min: {min_iou}, Avg: {seq_avg_iou} ')
+                            print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] All frames meet IoU requirement, Avg IoU: {seq_avg_iou} ')
                             break
                             
 
@@ -293,7 +286,6 @@ def evaluate(
 
             # store #interactions for entire sequence
             all_interactions[seq] = num_interactions_for_sequence
-            all_interactions_per_instance[seq] = num_interactions_per_instance_for_sequence
             all_instance_level_iou[seq] = instance_level_iou
             all_rounds[seq] = round_num
 
@@ -304,7 +296,7 @@ def evaluate(
             all_ious[seq] = iou_for_sequence 
             
             del clicker_dict, predictor_dict, processor
-            del all_frames, num_interactions_for_sequence, num_interactions_per_instance_for_sequence   
+            del all_frames, num_interactions_for_sequence   
             del iou_for_sequence, jaccard_instances, jaccard_mean, contour_instances, contour_mean
 
 

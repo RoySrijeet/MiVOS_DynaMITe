@@ -6,6 +6,7 @@ from dynamite.data.dataset_mappers.utils import create_circular_mask
 import os
 from dynamite.utils.misc import color_map
 import copy
+from PIL import Image
 
 class Clicker:
 
@@ -50,6 +51,7 @@ class Clicker:
         self.pred_masks = None
         self._set_gt_info()
 
+        self.palette = Image.open('/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/datasets/DAVIS/DAVIS-2017-trainval/Annotations/480p/blackswan/00000.png').getpalette()
         
         self.max_timestamps = [self.num_instances-1]    # num_instances initialized in _set_gt_info()
     
@@ -342,8 +344,10 @@ class Clicker:
             for c in range(pred_masks.shape[0]):
                 dummy_ += pred_masks[c] * (c+1)
             save_dir = os.path.join(save_results_path, 'masks')
-            os.makedirs(save_dir, exist_ok=True)
-            cv2.imwrite(os.path.join(save_dir, f"mask_{str(self.inputs[0]['image_id'])}_interactions_{num_interactions}_iou_{iou_val}_round_{round_num}.png"), dummy_)
+            os.makedirs(save_dir, exist_ok=True)            
+            img = Image.fromarray(dummy_.astype(np.uint8))
+            img.putpalette(self.palette)
+            img.save(os.path.join(save_dir, f"mask_{str(self.inputs[0]['image_id'])}_interactions_{num_interactions}_iou_{iou_val}_round_{round_num}.png"))        
 
     
     def apply_mask(self, image, mask, color, alpha=0.5):
