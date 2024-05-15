@@ -110,8 +110,7 @@ class Trainer(DefaultTrainer):
                 
                 if eval_strategy in ["random", "best", "worst"]:
                     if dataset_name != "mose_val":
-                        #from dynamite.inference.multi_instance.random_best_worst import evaluate
-                        from dynamite.inference.multi_instance.random_best_worst_mono import evaluate
+                        from dynamite.inference.multi_instance.random_best_worst import evaluate
                     else:
                         from dynamite.inference.multi_instance.random_best_worst_mose import evaluate
                 elif eval_strategy == "max_dt":
