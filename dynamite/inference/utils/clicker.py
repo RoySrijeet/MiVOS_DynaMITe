@@ -313,7 +313,7 @@ class Clicker:
         point_clicks_map = np.ones_like(image)*255
 
         # display FG clicks
-        if len(self.fg_orig_coords) and num_interactions:   # if no interactions (ground truth mask) - no need for clicks
+        if len(self.fg_orig_coords):
             for j, fg_coords_per_mask in enumerate(self.fg_orig_coords):
                 for i, coords in enumerate(fg_coords_per_mask):
                     color = np.array(color_map[(total_colors-5*j-4)%total_colors], dtype=np.uint8)

@@ -44,7 +44,8 @@ from model.propagation.prop_net import PropagationNetwork
 from model.fusion_net import FusionNet
 
 from metrics.summary import summarize_results,summarize_round_results
-
+import gc
+import copy
 
 _root = "/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/datasets/"
 _DATASET_PATH = {
@@ -76,7 +77,8 @@ class Trainer(DefaultTrainer):
         return build_detection_test_loader(cfg, dataset_name, mapper=mapper)        # d2 call
     
     @classmethod
-    def interactive_evaluation(cls, cfg, dynamite_model, propagation_model, fusion_model, args=None):
+    def interactive_evaluation(cls, cfg, dynamite_model, propagation_model, fusion_model,
+                             interactions, iou, all_images, all_gt_masks, dataloader_dict, args=None):
         """
         Evaluate the given model. The given model is expected to already contain
         weights to evaluate.
@@ -120,64 +122,46 @@ class Trainer(DefaultTrainer):
                 elif eval_strategy == "round_robin":
                     from dynamite.inference.multi_instance.round_robin import evaluate
                 
-                print(f'[INFO] Loaded Evaluation routine following {eval_strategy} evaluation strategy!')                                
-
-                print(f'[INFO] Loading all ground truth masks from the disc...')
-                all_gt_masks = load_gt_masks(dataset_name, debug)
-                if dataset_name != "mose_val":
-                    print(f'[INFO] Loading all frames from the disc...')
-                    all_images = load_images(dataset_name, debug)                
-                    assert len(all_images) == len(all_gt_masks)
-                    print(f'[INFO] Loaded {len(all_images)} sequences.')
-                else:
-                    all_images = {}
-                            
-                print(f'[INFO] Loading test data loader from {dataset_name}...')
-                data_loader = cls.build_test_loader(cfg, dataset_name)
-                print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
-                dataloader_dict = defaultdict(list)
-                print(f'[INFO] Iterating through the Data Loader...')
-                # iterate through the data_loader, one image at a time
-                for idx, inputs in enumerate(data_loader):                     
-                    curr_seq_name = inputs[0]["file_name"].split('/')[-2]
-                    if debug and curr_seq_name != list(all_images.keys())[0]:
-                        break
-                    dataloader_dict[curr_seq_name].append([idx, inputs])
-                del data_loader
+                print(f'[INFO] Loaded Evaluation routine following {eval_strategy} evaluation strategy!')                                                
                                                 
-                for interactions, iou in list(itertools.product(max_interactions,iou_threshold)):
-                    save_path = os.path.join(vis_path, f'{interactions}_interactions/iou_{int(iou*100)}')
-                    #save_path = vis_path
-                    os.makedirs(save_path, exist_ok=True) 
+                #for interactions, iou in list(itertools.product(max_interactions,iou_threshold)):
+                print(f'Interactions: {interactions}')
+                print(f'IoU threshold: {iou}')
+                save_path = os.path.join(vis_path, f'{interactions}_interactions/iou_{int(iou*100)}')
+                print(f'save path: {save_path}')
+                #save_path = vis_path
+                os.makedirs(save_path, exist_ok=True) 
 
-                    print(f'[INFO] Starting evaluation...')
-                    save_path_vis = os.path.join(save_path, 'vis')
-                    os.makedirs(save_path_vis, exist_ok=True)
-                    results_i = evaluate(dynamite_model, propagation_model, fusion_model, 
-                                        dataloader_dict, all_images, all_gt_masks,
-                                        iou_threshold = iou,
-                                        max_interactions = interactions,
-                                        eval_strategy = eval_strategy, 
-                                        seed_id=seed_id,
-                                        vis_path=save_path_vis, 
-                                        max_rounds=max_rounds, 
-                                        dataset_name=dataset_name,
-                                        save_masks=save_masks)
-                    
-                    print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
+                print(f'[INFO] Starting evaluation...')
+                save_path_vis = os.path.join(save_path, 'vis')
+                os.makedirs(save_path_vis, exist_ok=True)
+                results_i, progress_report = evaluate(dynamite_model, propagation_model, fusion_model, 
+                                    dataloader_dict, all_images, all_gt_masks,
+                                    iou_threshold = iou,
+                                    max_interactions = interactions,
+                                    eval_strategy = eval_strategy, 
+                                    seed_id=seed_id,
+                                    vis_path=save_path_vis, 
+                                    max_rounds=max_rounds, 
+                                    dataset_name=dataset_name,
+                                    save_masks=save_masks)
                 
-                    with open(os.path.join(save_path,f'results_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
-                        json.dump(results_i, f)
+                print(f'[INFO] Evaluation complete for dataset {dataset_name}!')
+            
+                with open(os.path.join(save_path,f'results_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                    json.dump(results_i, f)
+                with open(os.path.join(save_path,f'progress_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                    json.dump(progress_report, f)
+                
+                if dataset_name != "mose_val":
+                    summary, df = summarize_results(results_i)
+                    df.to_csv(os.path.join(save_path, f'round_results_{interactions}_interactions_iou_{int(iou*100)}.csv'))
+                    with open(os.path.join(save_path,f'summary_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                        json.dump(summary, f)
                     
-                    if dataset_name != "mose_val":
-                        summary, df = summarize_results(results_i)
-                        df.to_csv(os.path.join(save_path, f'round_results_{interactions}_interactions_iou_{int(iou*100)}.csv'))
-                        with open(os.path.join(save_path,f'summary_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
-                            json.dump(summary, f)
-                        
-                        summary_df = summarize_round_results(df, iou)
-                        summary_df.to_csv(os.path.join(save_path, f'round_summary_{interactions}_interactions_iou_{int(iou*100)}.csv'))
-                    del results_i
+                    summary_df = summarize_round_results(df, iou)
+                    summary_df.to_csv(os.path.join(save_path, f'round_summary_{interactions}_interactions_iou_{int(iou*100)}.csv'))
+                del results_i
                 
 def load_images(dataset_name="davis_2017_val", debug_mode=False):
     image_path = os.path.join(_root,_DATASET_PATH[dataset_name]["images"])
@@ -251,40 +235,72 @@ def main(args):
     cfg = setup(args)       # create configs 
     print('[INFO] Setup complete!')
 
-
-    # for evaluation
-    if args.eval_only:
-        print('[INFO] DynaMITExMiVOS Evaluation!')
-        torch.autograd.set_grad_enabled(False)
-
-        print('[INFO] Building model...')
-        dynamite_model = Trainer.build_model(cfg)                                                # load model (torch.nn.Module)
-        print('[INFO] Loading model weights...')                                        
-        DetectionCheckpointer(dynamite_model, save_dir=cfg.OUTPUT_DIR).resume_or_load(           # d2 checkpoint load
-             cfg.MODEL.WEIGHTS, resume=args.resume
-        )
-        print('[INFO] Model loaded!')
-
-        prop_model_weights = torch.load('/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/saves/propagation_model.pth')
-        prop_model = PropagationNetwork().cuda().eval()
-        prop_model.load_state_dict(prop_model_weights)
-        print(f'[INFO] Propagation module loaded!')
-
-        fusion_model_weights = torch.load('/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/saves/fusion.pth')
-        fusion_model = FusionNet().cuda().eval()
-        fusion_model.load_state_dict(fusion_model_weights)
-        print(f'[INFO] Fusion module loaded!')
-
-        res = Trainer.interactive_evaluation(cfg,dynamite_model,prop_model, fusion_model, args)
-
-        return res
-
+    dataset_name = args.eval_datasets[0]
+    # load data
+    print(f'[INFO] Loading all ground truth masks from the disc...')
+    all_gt_masks = load_gt_masks(dataset_name, args.debug)
+    if dataset_name != "mose_val":
+        print(f'[INFO] Loading all frames from the disc...')
+        all_images = load_images(dataset_name, args.debug)                
+        assert len(all_images) == len(all_gt_masks)
+        print(f'[INFO] Loaded {len(all_images)} sequences.')
     else:
-        # for training
-        # trainer = Trainer(cfg)
-        # trainer.resume_or_load(resume=args.resume)
-        # return trainer.train()
-        print(f'[INFO] Training routine... Not Implemented')
+        all_images = {}
+                
+    print(f'[INFO] Loading test data loader from {dataset_name}...')
+    data_loader = Trainer.build_test_loader(cfg, dataset_name)
+    print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
+    dataloader_dict = defaultdict(list)
+    print(f'[INFO] Iterating through the Data Loader...')
+    # iterate through the data_loader, one image at a time
+    for idx, inputs in enumerate(data_loader):                     
+        curr_seq_name = inputs[0]["file_name"].split('/')[-2]
+        if args.debug and curr_seq_name != list(all_images.keys())[0]:
+            break
+        dataloader_dict[curr_seq_name].append([idx, inputs])
+    del data_loader
+
+    prop_model_weights = torch.load('/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/saves/propagation_model.pth')
+    fusion_model_weights = torch.load('/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/saves/fusion.pth')
+
+    for interactions, iou in list(itertools.product(args.max_interactions,args.iou_threshold)):
+        dataloader_dict_copy = copy.deepcopy(dataloader_dict)
+        # for evaluation
+        if args.eval_only:
+            print('[INFO] DynaMITExMiVOS Evaluation!')
+            torch.autograd.set_grad_enabled(False)
+
+            print('[INFO] Building model...')
+            dynamite_model = Trainer.build_model(cfg)                                                # load model (torch.nn.Module)
+            print('[INFO] Loading model weights...')                                        
+            DetectionCheckpointer(dynamite_model, save_dir=cfg.OUTPUT_DIR).resume_or_load(           # d2 checkpoint load
+                cfg.MODEL.WEIGHTS, resume=args.resume
+            )
+            print('[INFO] Model loaded!')
+            
+            prop_model = PropagationNetwork().cuda().eval()
+            prop_model.load_state_dict(prop_model_weights)
+            print(f'[INFO] Propagation module loaded!')
+            
+            fusion_model = FusionNet().cuda().eval()
+            fusion_model.load_state_dict(fusion_model_weights)
+            print(f'[INFO] Fusion module loaded!')
+
+            res = Trainer.interactive_evaluation(cfg,dynamite_model,prop_model, fusion_model,
+                                                interactions,iou, all_images, all_gt_masks, dataloader_dict_copy, args)
+
+            #return res
+            print(f'Finished experiment: {interactions} interactions, at IoU threshold {iou}')
+            del dynamite_model, prop_model, fusion_model, res, dataloader_dict_copy
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        else:
+            # for training
+            # trainer = Trainer(cfg)
+            # trainer.resume_or_load(resume=args.resume)
+            # return trainer.train()
+            print(f'[INFO] Training routine... Not Implemented')
 
 
 

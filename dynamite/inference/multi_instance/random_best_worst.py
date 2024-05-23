@@ -14,6 +14,7 @@ from ..utils.clicker import Clicker
 from ..utils.predictor import Predictor
 from inference_core import InferenceCore
 from metrics.j_and_f_scores import batched_jaccard,batched_f_measure
+import gc
 
 
 def evaluate(
@@ -46,6 +47,7 @@ def evaluate(
     all_ious = {}
     all_instance_level_iou = {}
     copy_iou_checkpoints = [0.85, 0.90, 0.95, 0.99]
+    progress_report = {}
 
     
     with ExitStack() as stack:                                           
@@ -85,12 +87,13 @@ def evaluate(
             seq_avg_iou = 0                                                 # records average IoU for the sequence
             seq_avg_jf = 0                                                  # records average J&F for the sequence
             iou_checkpoints = copy.deepcopy(copy_iou_checkpoints)            # IoU checkpoints
+            progress_report[seq] = {}
             
             instance_level_iou = [[]] * num_frames
             
             #### ROUND LOOP ####
             while lowest_frame_index!=-1:
-                round_num += 1      # round start
+                round_num += 1      # round start                
                 loop = 0
                 if vis_path:
                     vis_path_round = os.path.join(vis_path_seq, str(round_num))
@@ -134,10 +137,7 @@ def evaluate(
                 # instance-wise IoU
                 ious = clicker.compute_iou()
                 instance_level_iou[lowest_frame_index] = [iou.tolist() for iou in ious]
-                frame_avg_iou = sum(ious)/len(ious)                                                        
-                if vis_path:
-                    clicker.save_visualization(vis_path_round, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_masks=save_masks)
-                
+                frame_avg_iou = sum(ious)/len(ious)
                 
                 # record the interaction, if the frame has never been interacted with
                 if not repeat:
@@ -150,9 +150,11 @@ def evaluate(
                                                            num_interactions_for_sequence[lowest_frame_index],
                                                            frame_avg_iou.item(),
                                                            seq_avg_iou, seq_avg_jf])
+                if vis_path:
+                    clicker.save_visualization(vis_path_round, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_masks=save_masks)
                 
                 # interaction limit
-                max_iters_for_image = max_interactions * num_instances                                      
+                max_iters_for_image = max_interactions * num_instances + 1                                
 
                 point_sampled = True
                 random_indexes = list(range(len(ious)))
@@ -236,19 +238,16 @@ def evaluate(
                     jaccard_mean, jaccard_instances = batched_jaccard(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
                     contour_mean, contour_instances = batched_f_measure(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
 
-                    j_and_f = 0.5*jaccard_mean + 0.5*contour_mean
-                    j_and_f = j_and_f.tolist()
-                    seq_avg_jf = sum(j_and_f)/len(j_and_f)
+                    j_and_f = 0.5*jaccard_mean + 0.5*contour_mean   # frame-level
+                    j_and_f = j_and_f.tolist()                      # frame-level
+                    seq_avg_jf = sum(j_and_f)/len(j_and_f)          # sequence-level
 
-                    #iou_for_sequence = compute_iou_for_sequence(out_masks, all_gt_masks[seq])
-                    iou_for_sequence = jaccard_mean.tolist()
-                    seq_avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)
-                    print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {seq_avg_iou}, Average J&F: {seq_avg_jf}')
-                    
-                    # if save_masks:
-                    #     np.save(os.path.join(vis_path_round, f"propagation_J&F_{round(seq_avg_jf,2)}_Round_{round_num}.npy"), out_masks)
+                    iou_for_sequence = jaccard_mean.tolist()        # frame-level
+                    seq_avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)   # sequence-level
+                    print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {seq_avg_iou}, Average J&F: {seq_avg_jf}')                                        
 
                     all_interactions_per_round[seq].append([round_num, '-', '-', '-', sum(num_interactions_for_sequence), '-', seq_avg_iou, seq_avg_jf])
+                    progress_report[seq][round_num] = {'J_AND_F': seq_avg_jf, 'J': seq_avg_iou, 'J_AND_F_FRAME': j_and_f, 'J_FRAME': iou_for_sequence}
                     
                     # Check stopping criteria
                     frame_list = [i for i in range(num_frames)]
@@ -277,7 +276,10 @@ def evaluate(
                             lowest_frame_index = -1
                             print(f'[STOPPING CRITERIA][SEQ:{seq}][ROUND:{round_num}] All frames meet IoU requirement, Avg IoU: {seq_avg_iou} ')
                             break
-                            
+                    
+                    if save_masks and lowest_frame_index==-1:
+                        os.makedirs(os.path.join(vis_path, "mivos_propagation"), exist_ok=True)
+                        np.save(os.path.join(vis_path, "mivos_propagation", f"{seq}_Round_{round_num}.npy"), out_masks)        
 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
@@ -298,30 +300,30 @@ def evaluate(
             del clicker_dict, predictor_dict, processor
             del all_frames, num_interactions_for_sequence   
             del iou_for_sequence, jaccard_instances, jaccard_mean, contour_instances, contour_mean
+            gc.collect()
 
+            results = {
+                        'iou_threshold': iou_threshold,
+                        'max_interactions': max_interactions,
+                        'max_rounds': max_rounds,
+                        'iou_checkpoints': copy_iou_checkpoints,
+                        
+                        'total_num_interactions': [total_num_interactions],
+                        'all_interactions': all_interactions,
+                        'all_interactions_per_instance': all_interactions_per_instance,
+                        
+                        'total_num_rounds': [total_num_rounds],
+                        'all_rounds': all_rounds,
+                        'all_interactions_per_round': all_interactions_per_round,
 
-    results = {
-                'iou_threshold': iou_threshold,
-                'max_interactions': max_interactions,
-                'max_rounds': max_rounds,
-                'iou_checkpoints': copy_iou_checkpoints,
-                
-                'total_num_interactions': [total_num_interactions],
-                'all_interactions': all_interactions,
-                'all_interactions_per_instance': all_interactions_per_instance,
-                
-                'total_num_rounds': [total_num_rounds],
-                'all_rounds': all_rounds,
-                'all_interactions_per_round': all_interactions_per_round,
+                        'all_instance_level_iou': all_instance_level_iou,
+                        'all_j_and_f' : all_j_and_f,
+                        'all_jaccard' : all_jaccard,
+                        'all_contour' : all_contour,
+                        'all_ious': all_ious,
+            }            
 
-                'all_instance_level_iou': all_instance_level_iou,
-                'all_j_and_f' : all_j_and_f,
-                'all_jaccard' : all_jaccard,
-                'all_contour' : all_contour,
-                'all_ious': all_ious,
-    }
-
-    return results
+    return results, progress_report
 
 
 @contextmanager
