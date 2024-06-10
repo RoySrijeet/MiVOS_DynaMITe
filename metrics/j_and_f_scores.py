@@ -257,3 +257,41 @@ def batched_f_measure(y_true,
         f_measure_mean = f_measure_result.mean(axis=1)
         return f_measure_mean, f_measure_result
     return f_measure_result
+
+
+
+# extra
+def compute_iou_for_sequence(pred: np.ndarray, gt: np.ndarray) -> list:
+    ious = []
+    for gt_mask, pred_mask in zip(gt, pred):
+        intersection = np.logical_and(gt_mask, pred_mask).sum()
+        union = np.logical_or(gt_mask, pred_mask).sum()
+        ious.append(intersection/union)
+    return ious
+
+def compute_instance_wise_iou_for_sequence(pred: np.ndarray, gt: np.ndarray)->np.ndarray:
+    # pred - output masks after temporal propagation
+    # gt - ground truth masks
+    ious = []
+    num_instances = len(np.unique(gt[0])) - 1
+    idx = 0
+    for gt_frame, pred_frame in zip(gt, pred):    # frame-level
+
+        ious_frame = []
+        mask_H,mask_W = gt_frame.shape
+        
+        gt_inst = np.zeros((num_instances,mask_H,mask_W))
+        for i in range(num_instances):
+            gt_inst[num_instances-i-1][np.where(gt_frame==i+1)] = 1
+        
+        pred_inst = np.zeros((num_instances,mask_H,mask_W))
+        for i in range(num_instances):
+            pred_inst[i][np.where(pred_frame==i+1)] = 1
+        
+        for g,p in zip(gt_inst, pred_inst):     # instance-level
+            intersection = np.logical_and(g, p).sum()
+            union = np.logical_or(g, p).sum()
+            ious_frame.append(intersection/union)
+        ious.append(ious_frame)
+        idx+=1
+    return np.array(ious)

@@ -19,7 +19,7 @@ from detectron2.structures.masks import PolygonMasks
 from dynamite.data.dataset_mappers.utils import convert_coco_poly_to_mask, build_transform_gen
 from dynamite.inference.utils.eval_utils import get_gt_clicks_coords_eval
 
-__all__ = ["EvaluationDatasetMapper"]
+__all__ = ["EvaluationDatasetMapper", "original_res_annotations", "get_instance_map"]
 
 # This is specifically designed for the COCO dataset.
 class EvaluationDatasetMapper:
@@ -136,14 +136,6 @@ class EvaluationDatasetMapper:
                 for obj in dataset_dict.pop("annotations")          # check if an object is labeled as COCO's 'crowd region'
                 if obj.get("iscrowd", 0) == 0                       # if not, update annotation properties (bbox and seg mask)
             ]
-
-            # for KITTI_MOTS add object IDs
-            # if self.dataset_name == 'kitti_mots_val':
-            #     file_name = '/'.join(dataset_dict["file_name"].split('/')[-2:])
-            #     path_to_instances_root = '/globalwork/roy/dynamite_video/mivos_dynamite/MiVOS_DynaMITe/datasets/KITTI_MOTS/train/instances'
-            #     path_to_gt_anno = os.path.join(path_to_instances_root,file_name)
-            #     gt_anno = np.array(Image.open(path_to_gt_anno))                
-            #     annos = add_object_ids(gt_anno, annos)
                 
             # USER: Implement additional transformations if you have other types of data
             # annos = [

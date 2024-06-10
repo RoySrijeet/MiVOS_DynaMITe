@@ -11,4 +11,5 @@ from . import (
     register_sbd_single_inst,
     register_kitti_mots_val,
     register_mose,
+    register_burst,
 )

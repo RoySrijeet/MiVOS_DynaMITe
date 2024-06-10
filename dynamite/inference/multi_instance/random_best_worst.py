@@ -16,6 +16,9 @@ from inference_core import InferenceCore
 from metrics.j_and_f_scores import batched_jaccard,batched_f_measure
 import gc
 
+import util.mivos_dynamite_helpers as helpers
+_DATASET_ROOT = helpers._DATASET_ROOT
+_DATASET_PATH = helpers._DATASET_PATH
 
 def evaluate(
     model, propagation_model, fusion_model,
@@ -59,18 +62,31 @@ def evaluate(
         total_num_interactions = 0                                       # for whole dataset       
         total_num_rounds = 0                                             # for whole dataset
 
-        random.seed(123456+seed_id)                
+        random.seed(123456+seed_id)
+
+        if dataset_name=="burst_val":
+            sequence_list = dataloader_dict
+        else:
+            sequence_list = list(dataloader_dict.keys())
 
         print(f'[EVALUATOR INFO] Sequence-wise evaluation...')
-        for seq in list(dataloader_dict.keys()):
+        for seq in sequence_list:
             print(f'\n[SEQUENCE INFO] Sequence: {seq}')
             if vis_path:
                 vis_path_seq = os.path.join(vis_path, seq)
             
+            dataloader_dict = helpers.burst_video_loader(seq)
+            
             # Initialize propagation module - once per-sequence
-            seq_object_ids = set(np.unique(all_gt_masks[seq][0]))       # object ids in the sequence
-            seq_num_instances = len(seq_object_ids) - 1                 # remove bg
-            all_frames = all_images[seq]                                # collect all image frames in the sequence
+            if dataset_name not in ["mose_val", "burst_val"]:
+                all_frames = all_images[seq]                            # collect all image frames in the sequence
+                all_masks = all_gt_masks[seq]
+            else:
+                all_frames = helpers.load_sequence_images(seq, dataset_name)
+                all_masks = helpers.load_sequence_masks(seq, dataset_name)
+            
+            seq_object_ids = set(np.unique(all_masks[0]))       # object ids in the sequence
+            seq_num_instances = len(seq_object_ids) - 1                 # remove bg            
             num_frames = len(all_frames)                                # sequence length
             all_frames = all_frames.unsqueeze(0).float()                
             processor = InferenceCore(propagation_model, fusion_model, all_frames, seq_num_instances)       # initialize prop module
@@ -101,6 +117,8 @@ def evaluate(
                 print(f'[DynaMITe INFO][SEQ:{seq}][ROUND:{round_num}] DynaMITe refining frame {lowest_frame_index}...')
                 idx, inputs = dataloader_dict[seq][lowest_frame_index]                              # load frame with lowest IoU
 
+                if dataset_name == "burst_val":
+                    del dataloader_dict
                 # (re)load Clicker and Predictor (DynaMITe)
                 if num_interactions_for_sequence[lowest_frame_index] == 0:                           # if frame has been previously interacted with 
                     clicker = Clicker(inputs, sampling_strategy)
@@ -113,7 +131,7 @@ def evaluate(
                 
 
                 #check for missing objects
-                object_ids = set(np.unique(all_gt_masks[seq][lowest_frame_index]))                  # objects present in the frame
+                object_ids = set(np.unique(all_masks[lowest_frame_index]))                  # objects present in the frame
                 num_instances = clicker.num_instances
                 missing_obj_ids = None
                 if num_instances!=seq_num_instances:
@@ -231,12 +249,17 @@ def evaluate(
                 print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Temporal propagation in progress...')
                 out_masks = processor.interact(pred_masks,lowest_frame_index)
 
-                if dataset_name in ['mose_val']:
-                    ...
+                if dataset_name in ['mose_val', 'burst_val']:                    
+                    if save_masks:
+                        print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Saving masks...')
+                        os.makedirs(os.path.join(vis_path, "mivos_propagation", seq.split('/')[0],seq.split('/')[1]), exist_ok=True)
+                        np.save(os.path.join(vis_path, "mivos_propagation", seq.split('/')[0],seq.split('/')[1],f"propagation_output_seq_{seq.split('/')[0]}_{seq.split('/')[1]}.npy"), out_masks)                    
+                    lowest_frame_index = -1 #stop round iter
+                    break
                 else:
                     # metrics (mean: over instances in a frame)
-                    jaccard_mean, jaccard_instances = batched_jaccard(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
-                    contour_mean, contour_instances = batched_f_measure(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
+                    jaccard_mean, jaccard_instances = batched_jaccard(all_masks, out_masks, average_over_objects=True, nb_objects=seq_num_instances)
+                    contour_mean, contour_instances = batched_f_measure(all_masks, out_masks, average_over_objects=True, nb_objects=seq_num_instances)
 
                     j_and_f = 0.5*jaccard_mean + 0.5*contour_mean   # frame-level
                     j_and_f = j_and_f.tolist()                      # frame-level
@@ -291,15 +314,16 @@ def evaluate(
             all_instance_level_iou[seq] = instance_level_iou
             all_rounds[seq] = round_num
 
-            # store metrics for entire sequence
-            all_j_and_f[seq] = j_and_f                                                            
-            all_jaccard[seq] = jaccard_mean.tolist()
-            all_contour[seq] = contour_mean.tolist()
-            all_ious[seq] = iou_for_sequence 
+            if dataset_name not in ['mose_val', 'burst_val']: 
+                # store metrics for entire sequence
+                all_j_and_f[seq] = j_and_f                                                       
+                all_jaccard[seq] = jaccard_mean.tolist()
+                all_contour[seq] = contour_mean.tolist()
+                all_ious[seq] = iou_for_sequence 
+                del iou_for_sequence, jaccard_instances, jaccard_mean, contour_instances, contour_mean
             
             del clicker_dict, predictor_dict, processor
-            del all_frames, num_interactions_for_sequence   
-            del iou_for_sequence, jaccard_instances, jaccard_mean, contour_instances, contour_mean
+            del all_frames, all_masks, num_interactions_for_sequence            
             gc.collect()
 
             results = {
@@ -339,38 +363,3 @@ def inference_context(model):
     yield
     model.train(training_mode)
 
-
-def compute_iou_for_sequence(pred: np.ndarray, gt: np.ndarray) -> list:
-    ious = []
-    for gt_mask, pred_mask in zip(gt, pred):
-        intersection = np.logical_and(gt_mask, pred_mask).sum()
-        union = np.logical_or(gt_mask, pred_mask).sum()
-        ious.append(intersection/union)
-    return ious
-
-def compute_instance_wise_iou_for_sequence(pred: np.ndarray, gt: np.ndarray)->np.ndarray:
-    # pred - output masks after temporal propagation
-    # gt - ground truth masks
-    ious = []
-    num_instances = len(np.unique(gt[0])) - 1
-    idx = 0
-    for gt_frame, pred_frame in zip(gt, pred):    # frame-level
-        
-        ious_frame = []
-        mask_H,mask_W = gt_frame.shape
-        
-        gt_inst = np.zeros((num_instances,mask_H,mask_W))
-        for i in range(num_instances):
-            gt_inst[num_instances-i-1][np.where(gt_frame==i+1)] = 1
-        
-        pred_inst = np.zeros((num_instances,mask_H,mask_W))
-        for i in range(num_instances):
-            pred_inst[i][np.where(pred_frame==i+1)] = 1
-        
-        for g,p in zip(gt_inst, pred_inst):     # instance-level
-            intersection = np.logical_and(g, p).sum()
-            union = np.logical_or(g, p).sum()
-            ious_frame.append(intersection/union)
-        ious.append(ious_frame)
-        idx+=1
-    return np.array(ious)
