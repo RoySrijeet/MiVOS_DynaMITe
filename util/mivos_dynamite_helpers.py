@@ -24,7 +24,8 @@ _DATASET_PATH = {
     },
     "burst_val":{
         "annotations": "BURST_masks/val",
-        "images":"BURST/all_frames/val",
+        # "images":"BURST/all_frames/val",
+        "images":"BURST/annotated_frames/val",
         "sets":"",
     }
 }

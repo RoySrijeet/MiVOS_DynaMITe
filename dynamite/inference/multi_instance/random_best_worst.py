@@ -75,7 +75,8 @@ def evaluate(
             if vis_path:
                 vis_path_seq = os.path.join(vis_path, seq)
             
-            dataloader_dict = helpers.burst_video_loader(seq)
+            if dataset_name=="burst_val":
+                dataloader_dict = helpers.burst_video_loader(seq)
             
             # Initialize propagation module - once per-sequence
             if dataset_name not in ["mose_val", "burst_val"]:
